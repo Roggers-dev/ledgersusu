@@ -190,24 +190,82 @@ if not st.session_state.auth_user:
     st.markdown("## 🔐 SusuFlow Enterprise Login")
     st.caption("50-Collector Micro-Savings & Credit Risk Platform | Built by ROG3RS")
     
-    users_dict = get_user_directory()
-    with st.form("multi_login_form"):
-        selected_login_id = st.selectbox(
-            "Select Operator Account",
-            options=list(users_dict.keys()),
-            format_func=lambda x: f"{users_dict[x]['full_name']} ({x})"
-        )
-        pass_in = st.text_input("Operator Security PIN / Password", type="password", placeholder="Default test pass: test")
-        if st.form_submit_button("Unlock Workspace", use_container_width=True):
-            uid, info = authenticate_user(selected_login_id, pass_in)
-            if uid:
-                st.session_state.auth_user = uid
-                st.session_state.user_info = info
-                st.session_state.last_txn = None
-                st.rerun()
-            else:
-                st.error("❌ Invalid password for selected operator.")
-    st.stop()
+import hashlib
+
+# 1. Load users function (handles Master Admin and all 50 collectors)
+def load_users():
+    users = {}
+    try:
+        if "users" in st.secrets:
+            for uid, data in st.secrets["users"].items():
+                users[uid] = dict(data)
+    except Exception:
+        pass
+        
+    default_hash = hashlib.sha256("test".encode()).hexdigest()
+    if "rog3rs_admin" not in users:
+        users["rog3rs_admin"] = {
+            "password_hash": default_hash,
+            "role": "manager",
+            "full_name": "Koffie Rogers (Master Admin)",
+            "zone": "All Agency Zones"
+        }
+    
+    for i in range(1, 51):
+        uid = f"collector_{i:02d}"
+        if uid not in users:
+            users[uid] = {
+                "password_hash": default_hash,
+                "role": "collector",
+                "full_name": f"Field Agent {i:02d}",
+                "zone": f"Market Zone {i}"
+            }
+    return users
+
+# 2. Initialize users_dict so it is globally available for the selectbox
+users_dict = load_users()
+    
+    # Ensure users_dict is loaded first
+users_dict = load_users()
+
+st.sidebar.markdown("### 🔐 SusuFlow Enterprise Login")
+
+# Clean, professional operator selector dropdown
+selected_user_id = st.sidebar.selectbox(
+    "Select Operator ID",
+    options=list(users_dict.keys()),
+    format_func=lambda x: f"{x} - {users_dict[x].get('full_name', x)}"
+)
+
+# Completely blank password input box (masked securely)
+entered_password = st.sidebar.text_input(
+    "Security PIN / Password", 
+    type="password", 
+    value=""  # Ensures no default text is pre-filled
+)
+
+login_button = st.sidebar.button("Authorize Access")
+    
+    
+"""   #users_dict = get_user_directory()
+       with st.form("multi_login_form"):
+           selected_login_id = st.selectbox(
+               "Select Operator Account",
+               options=list(users_dict.keys()),
+               format_func=lambda x: f"{users_dict[x]['full_name']} ({x})"
+           )
+           pass_in = st.text_input("Operator Security PIN / Password", type="password", placeholder="Default test pass: test")
+           if st.form_submit_button("Unlock Workspace", use_container_width=True):
+               uid, info = authenticate_user(selected_login_id, pass_in)
+               if uid:
+                   st.session_state.auth_user = uid
+                   st.session_state.user_info = info
+                   st.session_state.last_txn = None
+                   st.rerun()
+               else:
+                   st.error("❌ Invalid password for selected operator.")
+       st.stop() """
+  
 
 # ==============================================================================
 # 4. LOAD & PARTITION DATA BY COLLECTOR_ID
