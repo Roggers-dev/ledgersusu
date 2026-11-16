@@ -42,7 +42,6 @@ def init_db(db_path):
         )
     """)
 
-  # Added 'is_locked' flag to enforce post-entry edit restrictions
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             transaction_id TEXT PRIMARY KEY,
@@ -70,6 +69,13 @@ def init_master_access_db():
             allow_edit INTEGER DEFAULT 0
         )
     """)
+  # Safe migration: Add allow_edit column if updating an older database file
+  try:
+    cursor.execute(
+        "ALTER TABLE collector_access ADD COLUMN allow_edit INTEGER DEFAULT 0"
+    )
+  except sqlite3.OperationalError:
+    pass  # Column already exists
   conn.commit()
   return conn
 
@@ -224,9 +230,9 @@ if not st.session_state.auth_user:
       st.sidebar.error("❌ Invalid password for selected operator.")
 
   st.stop()
-
-
-# ==========================================
+  
+  
+  # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 user_info = st.session_state.get("user_info", {})
@@ -602,8 +608,8 @@ with tab3:
     ]] = merged_summary["Amount (GHS)"].apply(lambda x: pd.Series(evaluate_loan(x)))
 
     st.dataframe(merged_summary, use_container_width=True)
-    
-    # --- TAB 4: COLLECTOR ACCESS & EDIT CONTROL (MANAGER ONLY) ---
+
+# --- TAB 4: COLLECTOR ACCESS & EDIT CONTROL (MANAGER ONLY) ---
 if tab_access:
   with tab_access:
     st.markdown("### ⚙️ Collector Authorization & Edit Privilege Control")
@@ -637,17 +643,23 @@ if tab_access:
     action_col1, action_col2, action_col3 = st.columns(3)
     with action_col1:
       if st.button("✅ Authorize Agent", use_container_width=True):
-        set_collector_approval(target_collector, is_approved=True, allow_edit=cur_edit)
+        set_collector_approval(
+            target_collector, is_approved=True, allow_edit=cur_edit
+        )
         st.success(f"Agent {target_collector} authorized!")
         st.rerun()
     with action_col2:
       if st.button("🔓 Grant Edit Access", use_container_width=True):
-        set_collector_approval(target_collector, is_approved=cur_app, allow_edit=True)
+        set_collector_approval(
+            target_collector, is_approved=cur_app, allow_edit=True
+        )
         st.success(f"Edit privileges granted to {target_collector}!")
         st.rerun()
     with action_col3:
       if st.button("🔒 Revoke Edit Access", use_container_width=True):
-        set_collector_approval(target_collector, is_approved=cur_app, allow_edit=False)
+        set_collector_approval(
+            target_collector, is_approved=cur_app, allow_edit=False
+        )
         st.warning(f"Edit privileges revoked for {target_collector}.")
         st.rerun()
 
@@ -658,9 +670,7 @@ if tab_access:
             "Full Name": data.get("full_name"),
             "Zone": data.get("zone"),
             "Login Status": (
-                "Authorized"
-                if get_collector_meta(uid)[0]
-                else "Locked"
+                "Authorized" if get_collector_meta(uid)[0] else "Locked"
             ),
             "Edit Rights": (
                 "Allowed" if get_collector_meta(uid)[1] else "Restricted"
@@ -720,8 +730,6 @@ if tab_overview:
       )
       st.bar_chart(freq_chart.set_index("frequency"))
       st.markdown("#### Complete Master Client Directory")
-      st.dataframe(master_clients_df, use_container_wood=True) if hasattr(
-          st, "dataframe"
-      ) else st.dataframe(master_clients_df, use_container_width=True)
+      st.dataframe(master_clients_df, use_container_width=True)
     else:
       st.info("ℹ️ No transactions recorded across agent workspaces yet.")
