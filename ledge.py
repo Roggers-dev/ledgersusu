@@ -47,7 +47,6 @@ auth_conn = init_auth_db()
 def register_user(username, password_hash, full_name, zone, role="collector"):
   cursor = auth_conn.cursor()
   try:
-    # Collectors require admin approval (0), Master admin auto-approved (1)
     is_approved = 1 if role == "manager" else 0
     cursor.execute(
         """
@@ -114,7 +113,7 @@ def update_user_privileges(username, is_approved, allow_edit):
   auth_conn.commit()
 
 
-# Ensure default Master Admin exists in registry on first run
+# Ensure default Master Admin exists on first run (Username: rog3rs_admin, Password: admin123)
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
 if not get_user_credentials("rog3rs_admin"):
   register_user(
@@ -124,7 +123,6 @@ if not get_user_credentials("rog3rs_admin"):
       "All Agency Zones",
       role="manager",
   )
-  # Ensure admin is approved and can edit
   update_user_privileges("rog3rs_admin", is_approved=True, allow_edit=True)
 
 
@@ -286,20 +284,21 @@ if not st.session_state.auth_user:
 # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
-# Refresh user metadata from db on each run
 current_user_id = st.session_state.auth_user
 fresh_user_data = get_user_credentials(current_user_id)
 
 current_role = fresh_user_data.get("role", "collector")
 current_agent_name = fresh_user_data.get("full_name", "Field Agent")
 current_zone = fresh_user_data.get("zone", "Market Zone")
-user_allow_edit = 1 if current_role == "manager" else fresh_user_data.get("allow_edit", 0)
+user_allow_edit = (
+    1 if current_role == "manager" else fresh_user_data.get("allow_edit", 0)
+)
 
-# Connect strictly to THIS specific authenticated user's private database file
 user_db_path = get_user_db_path(current_user_id)
 agent_db_conn = init_user_db(user_db_path)
 
 
+# --- DATABASE HELPER FUNCTIONS (DEFINED BEFORE TABS) ---
 def get_my_clients():
   return pd.read_sql("SELECT * FROM clients", agent_db_conn)
 
@@ -350,9 +349,8 @@ def save_my_transaction(
       ),
   )
   agent_db_conn.commit()
-
-
-def update_my_transaction(tx_id, frequency, amount, notes):
+  
+  def update_my_transaction(tx_id, frequency, amount, notes):
   cursor = agent_db_conn.cursor()
   cursor.execute(
       """
@@ -363,7 +361,7 @@ def update_my_transaction(tx_id, frequency, amount, notes):
   agent_db_conn.commit()
 
 
-# Sidebar Info & Logout (Ensuring complete session wipe on logout)
+# Sidebar Info & Logout
 st.sidebar.markdown(f"### 👤 Operator: {current_agent_name}")
 edit_status_badge = (
     "🔓 Edit Rights Granted" if user_allow_edit else "🔒 Locked (No Edit)"
@@ -379,7 +377,7 @@ if st.sidebar.button("Log Out Session", use_container_width=True):
   st.rerun()
 
 st.title("💼 SusuFlow Enterprise Command Centre")
-st.markdown(f"*Strictly Isolated Private Collector Workspace*")
+st.markdown("*Strictly Isolated Private Collector Workspace*")
 st.markdown("---")
 
 # Main Application Tabs
@@ -453,10 +451,9 @@ with tab1:
   else:
     st.dataframe(df_my_clients, use_container_width=True)
 
-# --- TAB 2: TRANSACTIONS, EDIT RESTRICTIONS & EXCEL EXPORTS ---
+# --- TAB 2: TRANSACTIONS & EXPORTS ---
 with tab2:
   st.markdown("### Record Contributions & Protected Exports")
-
   df_my_clients = get_my_clients()
 
   if df_my_clients.empty:
@@ -503,7 +500,6 @@ with tab2:
               amount,
               notes,
           )
-
           st.session_state.last_receipt = {
               "Transaction ID": tx_id,
               "Timestamp": tx_timestamp,
@@ -515,11 +511,34 @@ with tab2:
               "Notes": notes,
           }
           st.success(
-              f"✅ Recorded GHS {amount:.2f} ({frequency}) for {client_name}! Entry"
-              " is now locked."
+              f"✅ Recorded GHS {amount:.2f} ({frequency}) for {client_name}!"
+              " Entry is now locked."
           )
 
-  # --- SECURE EDIT SECTION (GATED BY ADMIN ACCESS) ---
+  if st.session_state.last_receipt:
+    r = st.session_state.last_receipt
+    st.markdown("---")
+    st.markdown("### 🖨️ Official Instant Transaction Receipt")
+    st.markdown(
+        f"""
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px dashed #0e1117; color: #000;">
+            <h3 style="text-align: center; margin-bottom: 0;">🏛️ SUSUFLOW ENTERPRISE</h3>
+            <p style="text-align: center; font-size: 0.9em; color: #555;">Official Locked Collection Receipt</p>
+            <hr style="border: 0.5px solid #ccc;">
+            <p><b>Transaction ID:</b> {r['Transaction ID']}</p>
+            <p><b>Date & Time:</b> {r['Timestamp']}</p>
+            <p><b>Client ID:</b> {r['Client ID']} | <b>Name:</b> {r['Client Name']}</p>
+            <p><b>Contribution Type:</b> {r['Frequency']}</p>
+            <p><b>Amount Deposited:</b> <span style="font-size: 1.2em; color: green;"><b>GHS {r['Amount (GHS)']:,.2f}</b></span></p>
+            <p><b>Field Collector:</b> {r['Collector ID']} ({current_agent_name})</p>
+            <p><b>Remarks:</b> {r['Notes']}</p>
+            <hr style="border: 0.5px solid #ccc;">
+            <p style="text-align: center; font-size: 0.8em; color: #777;">Locked in isolated database partition.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
   st.markdown("#### 📝 Transaction Ledger & Edit Management")
   df_tx = get_my_transactions()
 
@@ -538,7 +557,8 @@ with tab2:
           " transaction records."
       )
       selected_tx_to_edit = st.selectbox(
-          "Select Transaction ID to Edit", options=df_tx["transaction_id"].tolist()
+          "Select Transaction ID to Edit",
+          options=df_tx["transaction_id"].tolist(),
       )
 
       if selected_tx_to_edit:
@@ -574,13 +594,7 @@ with tab2:
 
       st.dataframe(df_tx, use_container_width=True)
 
-    # --- PROTECTED EXCEL EXPORT (NO CSV) ---
     st.markdown("#### 📥 Secure Export Options")
-    st.caption(
-        "Export your transaction ledger as a formatted Excel spreadsheet"
-        " (.xlsx)."
-    )
-
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
       df_tx.to_excel(writer, index=False, sheet_name="Ledger")
@@ -638,7 +652,6 @@ with tab3:
         how="left",
     ).fillna({"Amount (GHS)": 0.0})
 
-
     def evaluate_loan(savings):
       if savings >= 200.0:
         return "Qualified (Tier 1 - 3x)", savings * 3.0
@@ -647,11 +660,12 @@ with tab3:
       else:
         return "Pending Savings Target", 0.0
 
-
     merged_summary[[
         "Qualification Status",
         "Max Loan Limit (GHS)",
-    ]] = merged_summary["Amount (GHS)"].apply(lambda x: pd.Series(evaluate_loan(x)))
+    ]] = merged_summary["Amount (GHS)"].apply(
+        lambda x: pd.Series(evaluate_loan(x))
+    )
 
     st.dataframe(merged_summary, use_container_width=True)
 
@@ -688,18 +702,24 @@ if tab_access:
 
       action_col1, action_col2, action_col3 = st.columns(3)
       with action_col1:
-        if st.button("✅ Authorize Agent", use_keyword=False, use_container_width=True):
-          update_user_privileges(target_collector, is_approved=True, allow_edit=cur_edit)
+        if st.button("✅ Authorize Agent", use_container_width=True):
+          update_user_privileges(
+              target_collector, is_approved=True, allow_edit=cur_edit
+          )
           st.success(f"Agent {target_collector} authorized!")
           st.rerun()
       with action_col2:
         if st.button("🔓 Grant Edit Access", use_container_width=True):
-          update_user_privileges(target_collector, is_approved=cur_app, allow_edit=True)
+          update_user_privileges(
+              target_collector, is_approved=cur_app, allow_edit=True
+          )
           st.success(f"Edit privileges granted to {target_collector}!")
           st.rerun()
       with action_col3:
         if st.button("🔒 Revoke Edit Access", use_container_width=True):
-          update_user_privileges(target_collector, is_approved=cur_app, allow_edit=False)
+          update_user_privileges(
+              target_collector, is_approved=cur_app, allow_edit=False
+          )
           st.warning(f"Edit privileges revoked for {target_collector}.")
           st.rerun()
 
@@ -758,9 +778,7 @@ if tab_overview:
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Agency Clients", f"{len(master_clients_df)} Registered")
-    total_vol = (
-        master_tx_df["amount"].sum() if not master_tx_df.empty else 0.0
-    )
+    total_vol = master_tx_df["amount"].sum() if not master_tx_df.empty else 0.0
     m2.metric("Total Agency Inflow", f"GHS {total_vol:,.2f}")
     m3.metric("Subscription Window", "Active (2026)")
 
