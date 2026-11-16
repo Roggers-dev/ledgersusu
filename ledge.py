@@ -38,7 +38,6 @@ def init_auth_db():
             is_frozen INTEGER DEFAULT 0
         )
     """)
-  # Safe migration for older database versions
   try:
     cursor.execute(
         "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0"
@@ -126,9 +125,8 @@ def update_user_privileges(username, is_approved, allow_edit, is_frozen):
       ),
   )
   auth_conn.commit()
-
-
-# Ensure default Master Admin exists on first run
+  
+  # Ensure default Master Admin exists on first run
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
 if not get_user_credentials("rog3rs_admin"):
   register_user(
@@ -477,10 +475,21 @@ with tab1:
           st.rerun()
 
   st.markdown("---")
-  st.markdown("#### 🔍 Client Search & Directory")
+  st.markdown("#### 🔍 Client Search & Automatically Summed Deposits")
   search_query = st.text_input(
       "Search clients by Name, ID, or Location/Market Zone"
   ).strip()
+
+  df_tx_all = get_my_transactions()
+  if not df_tx_all.empty:
+    client_sums = (
+        df_tx_all.groupby("client_id")["amount"].sum().reset_index()
+    )
+    client_sums.rename(
+        columns={"amount": "Total Savings (GHS)"}, inplace=True
+    )
+  else:
+    client_sums = pd.DataFrame(columns=["client_id", "Total Savings (GHS)"])
 
   if df_my_clients.empty:
     st.info(
@@ -488,20 +497,29 @@ with tab1:
         " completely clean and private to you."
     )
   else:
-    filtered_clients = df_my_clients.copy()
+    merged_client_view = pd.merge(
+        df_my_clients, client_sums, on="client_id", how="left"
+    ).fillna({"Total Savings (GHS)": 0.0})
+    merged_client_view["Total Savings (GHS)"] = merged_client_view[
+        "Total Savings (GHS)"
+    ].apply(lambda x: f"GHS {x:,.2f}")
+
     if search_query:
       mask = (
-          filtered_clients["client_id"]
+          merged_client_view["client_id"]
           .astype(str)
           .str.contains(search_query, case=False, na=False)
-          | filtered_clients["full_name"]
+          | merged_client_view["full_name"]
           .astype(str)
           .str.contains(search_query, case=False, na=False)
-          | filtered_clients["market_zone"]
+          | merged_client_view["market_zone"]
           .astype(str)
           .str.contains(search_query, case=False, na=False)
       )
-      filtered_clients = filtered_clients[mask]
+      filtered_clients = merged_client_view[mask]
+    else:
+      filtered_clients = merged_client_view
+
     st.dataframe(filtered_clients, use_container_width=True)
 
 # --- TAB 2: TRANSACTIONS & EXPORTS ---
@@ -564,7 +582,7 @@ with tab2:
               "Notes": notes,
           }
           st.success(
-              f"✅ Recorded GHS {amount:.2f} ({frequency}) for {client_name}!"
+              f"✅ Recorded GHS {amount:,.2f} ({frequency}) for {client_name}!"
               " Entry is now locked."
           )
 
@@ -598,12 +616,28 @@ with tab2:
   if df_tx.empty:
     st.info("ℹ️ No transactions recorded yet in your private workspace.")
   else:
-    if not user_allow_edit:
-      st.info(
-          "🔒 **Edit Protection Active:** Entries are locked. You cannot modify"
-          " past transactions unless Master Admin grants you edit access."
+    total_entries_count = len(df_tx)
+    requires_admin_edit_lock = total_entries_count >= 20
+
+    display_tx_df = df_tx.copy()
+    display_tx_df["amount"] = display_tx_df["amount"].apply(
+        lambda x: f"GHS {x:,.2f}"
+    )
+
+    if requires_admin_edit_lock and not user_allow_edit:
+      st.warning(
+          f"🔒 **Threshold Reached ({total_entries_count} entries):** You have"
+          " reached or exceeded 20 entries. Past transactions are locked and"
+          " cannot be updated unless Master Admin grants you edit access."
       )
-      st.dataframe(df_tx, use_container_width=True)
+      st.dataframe(display_tx_df, use_container_width=True)
+    elif not user_allow_edit:
+      st.info(
+          f"🔒 **Edit Protection Active ({total_entries_count}/20 entries):**"
+          " Entries are locked. You cannot modify past transactions unless"
+          " Master Admin grants you edit access."
+      )
+      st.dataframe(display_tx_df, use_container_width=True)
     else:
       st.warning(
           "🔓 **Edit Access Granted:** You are permitted to modify existing"
@@ -645,7 +679,7 @@ with tab2:
             )
             st.rerun()
 
-      st.dataframe(df_tx, use_container_width=True)
+      st.dataframe(display_tx_df, use_container_width=True)
 
     st.markdown("#### 📥 Secure Export Options")
     output = io.BytesIO()
@@ -661,8 +695,8 @@ with tab2:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
-
-# --- TAB 3: LOAN QUALIFICATION AUDIT ---
+    
+    # --- TAB 3: LOAN QUALIFICATION AUDIT ---
 with tab3:
   st.markdown("### 💳 Loan Qualification Tracker")
   df_my_clients = get_my_clients()
@@ -678,7 +712,7 @@ with tab3:
           .reset_index()
       )
       summary_df.rename(
-          columns={"client_id": "Client ID", "amount": "Amount (GHS)"},
+          columns={"client_id": "Client ID", "amount": "Total Savings"},
           inplace=True,
       )
     else:
@@ -687,7 +721,7 @@ with tab3:
           columns={"client_id": "Client ID", "full_name": "Client Name"},
           inplace=True,
       )
-      summary_df["Amount (GHS)"] = 0.0
+      summary_df["Total Savings"] = 0.0
 
     df_my_clients.rename(
         columns={
@@ -700,24 +734,33 @@ with tab3:
     )
     merged_summary = pd.merge(
         df_my_clients[["Client ID", "Full Name", "Phone Number", "Market Zone"]],
-        summary_df[["Client ID", "Amount (GHS)"]],
+        summary_df[["Client ID", "Total Savings"]],
         on="Client ID",
         how="left",
-    ).fillna({"Amount (GHS)": 0.0})
+    ).fillna({"Total Savings": 0.0})
 
     def evaluate_loan(savings):
       if savings >= 200.0:
-        return "Qualified (Tier 1 - 3x)", savings * 3.0
+        return (
+            "Qualified (Tier 1 - 3x)",
+            f"GHS {savings * 3.0:,.2f}",
+        )
       elif savings >= 50.0:
-        return "Qualified (Tier 2 - 2x)", savings * 2.0
+        return (
+            "Qualified (Tier 2 - 2x)",
+            f"GHS {savings * 2.0:,.2f}",
+        )
       else:
-        return "Pending Savings Target", 0.0
+        return "Pending Savings Target", "GHS 0.00"
 
     merged_summary[[
         "Qualification Status",
-        "Max Loan Limit (GHS)",
-    ]] = merged_summary["Amount (GHS)"].apply(
+        "Max Loan Limit",
+    ]] = merged_summary["Total Savings"].apply(
         lambda x: pd.Series(evaluate_loan(x))
+    )
+    merged_summary["Total Savings"] = merged_summary["Total Savings"].apply(
+        lambda x: f"GHS {x:,.2f}"
     )
 
     st.dataframe(merged_summary, use_container_width=True)
@@ -883,4 +926,3 @@ if tab_overview:
       st.dataframe(master_clients_df, use_container_width=True)
     else:
       st.info("ℹ️ No transactions recorded across agent workspaces yet.")
-  
