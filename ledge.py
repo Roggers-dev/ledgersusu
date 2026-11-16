@@ -18,11 +18,117 @@ st.set_page_config(
 
 
 # ==========================================
-# 2. STRICTLY ISOLATED DATABASE PARTITIONING
+# 2. DYNAMIC USER MANAGEMENT & ISOLATED DATABASES
 # ==========================================
+def init_auth_db():
+  os.makedirs("secure_data", exist_ok=True)
+  conn = sqlite3.connect(
+      os.path.join("secure_data", "users_registry.db"), check_same_thread=False
+  )
+  cursor = conn.cursor()
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT,
+            full_name TEXT,
+            zone TEXT,
+            role TEXT,
+            is_approved INTEGER,
+            allow_edit INTEGER
+        )
+    """)
+  conn.commit()
+  return conn
+
+
+auth_conn = init_auth_db()
+
+
+def register_user(username, password_hash, full_name, zone, role="collector"):
+  cursor = auth_conn.cursor()
+  try:
+    # Collectors require admin approval (0), Master admin auto-approved (1)
+    is_approved = 1 if role == "manager" else 0
+    cursor.execute(
+        """
+            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        """,
+        (username, password_hash, full_name, zone, role, is_approved),
+    )
+    auth_conn.commit()
+    return True, "Registration successful!"
+  except sqlite3.IntegrityError:
+    return False, "Username already exists. Choose a different username."
+
+
+def get_user_credentials(username):
+  cursor = auth_conn.cursor()
+  cursor.execute(
+      "SELECT username, password_hash, full_name, zone, role, is_approved,"
+      " allow_edit FROM users WHERE username = ?",
+      (username,),
+  )
+  row = cursor.fetchone()
+  if row:
+    return {
+        "username": row[0],
+        "password_hash": row[1],
+        "full_name": row[2],
+        "zone": row[3],
+        "role": row[4],
+        "is_approved": row[5],
+        "allow_edit": row[6],
+    }
+  return None
+
+
+def get_all_users_dict():
+  cursor = auth_conn.cursor()
+  cursor.execute(
+      "SELECT username, password_hash, full_name, zone, role, is_approved,"
+      " allow_edit FROM users"
+  )
+  rows = cursor.fetchall()
+  users = {}
+  for row in rows:
+    users[row[0]] = {
+        "password_hash": row[1],
+        "full_name": row[2],
+        "zone": row[3],
+        "role": row[4],
+        "is_approved": row[5],
+        "allow_edit": row[6],
+    }
+  return users
+
+
+def update_user_privileges(username, is_approved, allow_edit):
+  cursor = auth_conn.cursor()
+  cursor.execute(
+      """
+        UPDATE users SET is_approved = ?, allow_edit = ? WHERE username = ?
+    """,
+      (1 if is_approved else 0, 1 if allow_edit else 0, username),
+  )
+  auth_conn.commit()
+
+
+# Ensure default Master Admin exists in registry on first run
+default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
+if not get_user_credentials("rog3rs_admin"):
+  register_user(
+      "rog3rs_admin",
+      default_admin_hash,
+      "Koffie Rogers (Master Admin)",
+      "All Agency Zones",
+      role="manager",
+  )
+  # Ensure admin is approved and can edit
+  update_user_privileges("rog3rs_admin", is_approved=True, allow_edit=True)
+
+
 def get_user_db_path(username):
-  """Ensures completely isolated database storage per user account."""
-  # Create a secure directory for databases if it doesn't exist
   os.makedirs("secure_data", exist_ok=True)
   if username == "rog3rs_admin":
     return os.path.join("secure_data", "master_agency.db")
@@ -30,10 +136,9 @@ def get_user_db_path(username):
     return os.path.join("secure_data", f"db_{username}.db")
 
 
-def init_db(db_path):
+def init_user_db(db_path):
   conn = sqlite3.connect(db_path, check_same_thread=False)
   cursor = conn.cursor()
-
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS clients (
             client_id TEXT PRIMARY KEY,
@@ -44,7 +149,6 @@ def init_db(db_path):
             registered_by TEXT
         )
     """)
-
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             transaction_id TEXT PRIMARY KEY,
@@ -62,93 +166,9 @@ def init_db(db_path):
   return conn
 
 
-def init_master_access_db():
-  os.makedirs("secure_data", exist_ok=True)
-  conn = sqlite3.connect(
-      os.path.join("secure_data", "master_access.db"), check_same_thread=False
-  )
-  cursor = conn.cursor()
-  cursor.execute("""
-        CREATE TABLE IF NOT EXISTS collector_access (
-            collector_id TEXT PRIMARY KEY,
-            is_approved INTEGER,
-            allow_edit INTEGER DEFAULT 0
-        )
-    """)
-  try:
-    cursor.execute(
-        "ALTER TABLE collector_access ADD COLUMN allow_edit INTEGER DEFAULT 0"
-    )
-  except sqlite3.OperationalError:
-    pass
-  conn.commit()
-  return conn
-
-
-master_access_conn = init_master_access_db()
-
-
-def get_collector_meta(collector_id):
-  cursor = master_access_conn.cursor()
-  cursor.execute(
-      "SELECT is_approved, allow_edit FROM collector_access WHERE collector_id"
-      " = ?",
-      (collector_id,),
-  )
-  row = cursor.fetchone()
-  if row is None:
-    return 0, 0
-  return row[0], row[1]
-
-
-def set_collector_approval(collector_id, is_approved, allow_edit):
-  cursor = master_access_conn.cursor()
-  cursor.execute(
-      """
-        INSERT OR REPLACE INTO collector_access (collector_id, is_approved, allow_edit)
-        VALUES (?, ?, ?)
-    """,
-      (collector_id, 1 if is_approved else 0, 1 if allow_edit else 0),
-  )
-  master_access_conn.commit()
-
-
 # ==========================================
-# 3. USER DIRECTORY & SUBSCRIPTION LOGIC
+# 3. SUBSCRIPTION PERIOD LOGIC
 # ==========================================
-def load_users():
-  users = {}
-  try:
-    if "users" in st.secrets:
-      for uid, data in st.secrets["users"].items():
-        users[uid] = dict(data)
-  except Exception:
-    pass
-
-  default_hash = hashlib.sha256("test".encode()).hexdigest()
-  if "rog3rs_admin" not in users:
-    users["rog3rs_admin"] = {
-        "password_hash": default_hash,
-        "role": "manager",
-        "full_name": "Koffie Rogers (Master Admin)",
-        "zone": "All Agency Zones",
-    }
-
-  for i in range(1, 51):
-    uid = f"collector_{i:02d}"
-    if uid not in users:
-      users[uid] = {
-          "password_hash": default_hash,
-          "role": "collector",
-          "full_name": f"Field Agent {i:02d}",
-          "zone": f"Market Zone {i}",
-      }
-  return users
-
-
-users_dict = load_users()
-
-
 def check_subscription_period():
   try:
     sub_config = st.secrets.get("subscription", {})
@@ -197,42 +217,68 @@ if not is_active:
 
 
 # ==========================================
-# 6. SIDEBAR AUTHENTICATION GATE
+# 6. SIDEBAR AUTHENTICATION & SIGN-UP GATE
 # ==========================================
 if not st.session_state.auth_user:
-  st.sidebar.markdown("### 🔐 SusuFlow Enterprise Login")
-  st.sidebar.caption("Strictly Isolated Workspaces & Privacy Protection")
-
-  selected_user_id = st.sidebar.selectbox(
-      "Select Operator Account",
-      options=list(users_dict.keys()),
-      format_func=lambda x: f"{x} - {users_dict[x].get('full_name', x)}",
+  st.sidebar.markdown("### 🔐 SusuFlow Enterprise Portal")
+  auth_mode = st.sidebar.radio(
+      "Select Action", ["Log In", "Sign Up (New Account)"]
   )
 
-  entered_password = st.sidebar.text_input(
-      "Operator Security PIN / Password", type="password", value=""
-  )
+  if auth_mode == "Log In":
+    st.sidebar.subheader("Operator Login")
+    login_user = st.sidebar.text_input("Username").strip()
+    login_pass = st.sidebar.text_input("Password", type="password")
 
-  if st.sidebar.button("Unlock Workspace", use_container_width=True):
-    entered_hash = hashlib.sha256(entered_password.encode()).hexdigest()
-    stored_hash = users_dict.get(selected_user_id, {}).get("password_hash", "")
+    if st.sidebar.button("Log In to My Workspace", use_container_width=True):
+      user_data = get_user_credentials(login_user)
+      if user_data:
+        entered_hash = hashlib.sha256(login_pass.encode()).hexdigest()
+        if entered_hash == user_data["password_hash"]:
+          is_manager = user_data["role"] == "manager"
+          is_approved = bool(user_data["is_approved"])
 
-    if entered_hash == stored_hash:
-      is_manager = users_dict.get(selected_user_id, {}).get("role") == "manager"
-      is_approved, _ = get_collector_meta(selected_user_id)
-      is_approved_bool = True if is_manager else bool(is_approved)
-
-      if not is_manager and not is_approved_bool:
-        st.sidebar.error(
-            "🚫 Access Pending: Master Admin has not yet authorized this"
-            " collector account."
-        )
+          if not is_manager and not is_approved:
+            st.sidebar.error(
+                "🚫 Access Pending: Master Admin has not yet authorized your"
+                " account."
+            )
+          else:
+            st.session_state.auth_user = user_data["username"]
+            st.session_state.user_info = user_data
+            st.session_state.last_receipt = None
+            st.rerun()
+        else:
+          st.sidebar.error("❌ Incorrect password.")
       else:
-        st.session_state.auth_user = selected_user_id
-        st.session_state.user_info = users_dict[selected_user_id]
-        st.rerun()
-    else:
-      st.sidebar.error("❌ Invalid password for selected operator.")
+        st.sidebar.error(
+            "❌ Username not found. Please sign up for a new account."
+        )
+
+  else:
+    st.sidebar.subheader("Create New Account")
+    new_user = st.sidebar.text_input("Choose Username").strip()
+    new_pass = st.sidebar.text_input("Choose Password", type="password")
+    new_name = st.sidebar.text_input("Full Name").strip()
+    new_zone = st.sidebar.text_input(
+        "Assigned Market Zone", value="Market Zone 1"
+    ).strip()
+
+    if st.sidebar.button("Register Account", use_container_width=True):
+      if not new_user or not new_pass or not new_name:
+        st.sidebar.error("❌ Please fill in all required fields.")
+      else:
+        pass_hash = hashlib.sha256(new_pass.encode()).hexdigest()
+        success, msg = register_user(
+            new_user, pass_hash, new_name, new_zone, role="collector"
+        )
+        if success:
+          st.sidebar.success(
+              "✅ Account created successfully! Please wait for Master Admin"
+              " approval before logging in."
+          )
+        else:
+          st.sidebar.error(f"❌ {msg}")
 
   st.stop()
 
@@ -240,24 +286,18 @@ if not st.session_state.auth_user:
 # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
-user_info = st.session_state.get("user_info", {})
-current_role = user_info.get("role", "collector") if user_info else "collector"
-current_agent_name = (
-    user_info.get("full_name", "Field Agent") if user_info else "Field Agent"
-)
-current_zone = (
-    user_info.get("zone", "Market Zone") if user_info else "Market Zone"
-)
+# Refresh user metadata from db on each run
 current_user_id = st.session_state.auth_user
+fresh_user_data = get_user_credentials(current_user_id)
 
-# Check current user edit privileges
-_, user_allow_edit = get_collector_meta(current_user_id)
-if current_role == "manager":
-  user_allow_edit = 1
-  
-  # Connect strictly to THIS specific authenticated user's private database file
+current_role = fresh_user_data.get("role", "collector")
+current_agent_name = fresh_user_data.get("full_name", "Field Agent")
+current_zone = fresh_user_data.get("zone", "Market Zone")
+user_allow_edit = 1 if current_role == "manager" else fresh_user_data.get("allow_edit", 0)
+
+# Connect strictly to THIS specific authenticated user's private database file
 user_db_path = get_user_db_path(current_user_id)
-agent_db_conn = init_db(user_db_path)
+agent_db_conn = init_user_db(user_db_path)
 
 
 def get_my_clients():
@@ -323,7 +363,7 @@ def update_my_transaction(tx_id, frequency, amount, notes):
   agent_db_conn.commit()
 
 
-# Sidebar Info & Logout
+# Sidebar Info & Logout (Ensuring complete session wipe on logout)
 st.sidebar.markdown(f"### 👤 Operator: {current_agent_name}")
 edit_status_badge = (
     "🔓 Edit Rights Granted" if user_allow_edit else "🔒 Locked (No Edit)"
@@ -406,7 +446,10 @@ with tab1:
 
   st.markdown("#### Your Registered Clients Directory")
   if df_my_clients.empty:
-    st.info("ℹ️ No clients registered in your private space yet.")
+    st.info(
+        "ℹ️ No clients registered in your private space yet. Your records are"
+        " completely clean and private to you."
+    )
   else:
     st.dataframe(df_my_clients, use_container_width=True)
 
@@ -481,7 +524,7 @@ with tab2:
   df_tx = get_my_transactions()
 
   if df_tx.empty:
-    st.info("ℹ️ No transactions recorded yet.")
+    st.info("ℹ️ No transactions recorded yet in your private workspace.")
   else:
     if not user_allow_edit:
       st.info(
@@ -616,78 +659,73 @@ with tab3:
 if tab_access:
   with tab_access:
     st.markdown("### ⚙️ Collector Authorization & Edit Privilege Control")
-    st.caption(
-        "Authorize collectors and toggle whether specific agents are allowed"
-        " to edit past entries."
-    )
-
+    users_dict = get_all_users_dict()
     collector_items = [
         (uid, data)
         for uid, data in users_dict.items()
         if data.get("role") == "collector"
     ]
 
-    col_ctrl1, col_ctrl2 = st.columns([2, 1])
-    with col_ctrl1:
-      target_collector = st.selectbox(
-          "Select Field Agent Account",
-          options=[item[0] for item in collector_items],
-          format_func=lambda x: f"{x} - {users_dict[x].get('full_name')} ({users_dict[x].get('zone')})",
-      )
-
-    cur_app, cur_edit = get_collector_meta(target_collector)
-
-    with col_ctrl2:
-      st.markdown(
-          f"**Status:** {'🟢 Authorized' if cur_app else '🔴 Locked'}\n\n**Edit"
-          f" Permission:** {'🔓 Allowed' if cur_edit else '🔒 Restricted'}"
-      )
-
-    action_col1, action_col2, action_col3 = st.columns(3)
-    with action_col1:
-      if st.button("✅ Authorize Agent", use_container_width=True):
-        set_collector_approval(
-            target_collector, is_approved=True, allow_edit=cur_edit
+    if not collector_items:
+      st.info("ℹ️ No registered collector accounts found yet.")
+    else:
+      col_ctrl1, col_ctrl2 = st.columns([2, 1])
+      with col_ctrl1:
+        target_collector = st.selectbox(
+            "Select Field Agent Account",
+            options=[item[0] for item in collector_items],
+            format_func=lambda x: f"{x} - {users_dict[x].get('full_name')} ({users_dict[x].get('zone')})",
         )
-        st.success(f"Agent {target_collector} authorized!")
-        st.rerun()
-    with action_col2:
-      if st.button("🔓 Grant Edit Access", use_container_width=True):
-        set_collector_approval(
-            target_collector, is_approved=cur_app, allow_edit=True
-        )
-        st.success(f"Edit privileges granted to {target_collector}!")
-        st.rerun()
-    with action_col3:
-      if st.button("🔒 Revoke Edit Access", use_container_width=True):
-        set_collector_approval(
-            target_collector, is_approved=cur_app, allow_edit=False
-        )
-        st.warning(f"Edit privileges revoked for {target_collector}.")
-        st.rerun()
 
-    st.markdown("#### Full Roster Authorization & Privilege Status")
-    status_df = pd.DataFrame([
-        {
-            "Agent ID": uid,
-            "Full Name": data.get("full_name"),
-            "Zone": data.get("zone"),
-            "Login Status": (
-                "Authorized" if get_collector_meta(uid)[0] else "Locked"
-            ),
-            "Edit Rights": (
-                "Allowed" if get_collector_meta(uid)[1] else "Restricted"
-            ),
-        }
-        for uid, data in users_dict.items()
-        if data.get("role") == "collector"
-    ])
-    st.dataframe(status_df, use_container_width=True)
+      cur_app = users_dict[target_collector].get("is_approved", 0)
+      cur_edit = users_dict[target_collector].get("allow_edit", 0)
+
+      with col_ctrl2:
+        st.markdown(
+            f"**Status:** {'🟢 Authorized' if cur_app else '🔴 Locked'}\n\n**Edit"
+            f" Permission:** {'🔓 Allowed' if cur_edit else '🔒 Restricted'}"
+        )
+
+      action_col1, action_col2, action_col3 = st.columns(3)
+      with action_col1:
+        if st.button("✅ Authorize Agent", use_keyword=False, use_container_width=True):
+          update_user_privileges(target_collector, is_approved=True, allow_edit=cur_edit)
+          st.success(f"Agent {target_collector} authorized!")
+          st.rerun()
+      with action_col2:
+        if st.button("🔓 Grant Edit Access", use_container_width=True):
+          update_user_privileges(target_collector, is_approved=cur_app, allow_edit=True)
+          st.success(f"Edit privileges granted to {target_collector}!")
+          st.rerun()
+      with action_col3:
+        if st.button("🔒 Revoke Edit Access", use_container_width=True):
+          update_user_privileges(target_collector, is_approved=cur_app, allow_edit=False)
+          st.warning(f"Edit privileges revoked for {target_collector}.")
+          st.rerun()
+
+      st.markdown("#### Full Roster Authorization & Privilege Status")
+      status_df = pd.DataFrame([
+          {
+              "Username": uid,
+              "Full Name": data.get("full_name"),
+              "Zone": data.get("zone"),
+              "Login Status": (
+                  "Authorized" if data.get("is_approved") else "Locked"
+              ),
+              "Edit Rights": (
+                  "Allowed" if data.get("allow_edit") else "Restricted"
+              ),
+          }
+          for uid, data in users_dict.items()
+          if data.get("role") == "collector"
+      ])
+      st.dataframe(status_df, use_container_width=True)
 
 # --- TAB 5: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
 if tab_overview:
   with tab_overview:
     st.markdown("### 🏢 Executive Master Agency Overview")
+    users_dict = get_all_users_dict()
     all_agency_clients = []
     all_agency_tx = []
 
