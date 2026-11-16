@@ -1,137 +1,6 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import hashlib
-import hmac
 from datetime import datetime
-import io
+import hashlib
 import os
-import urllib.parse
-
-
-# Page Configuration for Professional SaaS Look
-st.set_page_config(
-    page_title="SusuFlow Enterprise",
-    page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-# 1. Load users function (handles Master Admin and all 50 collectors)
-def load_users():
-  users = {}
-  try:
-    if "users" in st.secrets:
-      for uid, data in st.secrets["users"].items():
-        users[uid] = dict(data)
-  except Exception:
-    pass
-
-  default_hash = hashlib.sha256("test".encode()).hexdigest()
-  if "rog3rs_admin" not in users:
-    users["rog3rs_admin"] = {
-        "password_hash": default_hash,
-        "role": "manager",
-        "full_name": "Koffie Rogers (Master Admin)",
-        "zone": "All Agency Zones",
-    }
-
-  for i in range(1, 51):
-    uid = f"collector_{i:02d}"
-    if uid not in users:
-      users[uid] = {
-          "password_hash": default_hash,
-          "role": "collector",
-          "full_name": f"Field Agent {i:02d}",
-          "zone": f"Market Zone {i}",
-      }
-  return users
-
-
-users_dict = load_users()
-
-
-# 2. SaaS Subscription & License Check Gate
-def check_subscription_status():
-  try:
-    sub_config = st.secrets.get("subscription", {})
-    status = sub_config.get("status", "active")
-    expiry_str = sub_config.get("expiry_date", "2026-12-31")
-    expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-    if status != "active" or datetime.now().date() > expiry_date:
-      return False, expiry_str
-  except Exception:
-    pass
-  return True, None
-
-# 3. Initialize Session State Safely
-if "auth_user" not in st.session_state:
-  st.session_state.auth_user = None
-if "user_info" not in st.session_state:
-  st.session_state.user_info = None
-
-# 4. Clean Sidebar Login Screen (Zero plain-text hints)
-if not st.session_state.auth_user:
-  st.sidebar.markdown("### 🔐 SusuFlow Enterprise Login")
-  st.sidebar.caption("50-Collector Micro-Savings & Credit Risk Platform")
-
-  selected_user_id = st.sidebar.selectbox(
-      "Select Operator Account",
-      options=list(users_dict.keys()),
-      format_func=lambda x: f"{x} - {users_dict[x].get('full_name', x)}",
-  )
-
-  entered_password = st.sidebar.text_input(
-      "Operator Security PIN / Password", type="password", value=""
-  )
-
-  if st.sidebar.button("Unlock Workspace", use_container_width=True):
-    entered_hash = hashlib.sha256(entered_password.encode()).hexdigest()
-    stored_hash = users_dict.get(selected_user_id, {}).get("password_hash", "")
-
-    if entered_hash == stored_hash:
-      st.session_state.auth_user = selected_user_id
-      st.session_state.user_info = users_dict[selected_user_id]
-      st.rerun()
-    else:
-      st.sidebar.error("❌ Invalid password for selected operator.")
-
-  st.stop()  # Halts execution so unauthenticated users cannot access core modules
-  
-  # 5. Enforce Subscription Gate Post-Login
-is_subscribed, expiry_date = check_subscription_status()
-if not is_subscribed:
-  st.error("⚠️ **Subscription Expired / License Suspended**")
-  st.warning(
-      "The software license for this agency has expired. Live operations are"
-      " temporarily locked."
-  )
-  st.info(
-      f"To restore full access, please contact your administrator. (Expired On:"
-      f" {expiry_date})"
-  )
-  st.stop()
-
-# 6. Safe Role & User Information Access (Guaranteed non-None)
-user_info = st.session_state.get("user_info", {})
-current_role = user_info.get("role", "collector") if user_info else "collector"
-current_agent_name = (
-    user_info.get("full_name", "Field Agent") if user_info else "Field Agent"
-)
-current_zone = (
-    user_info.get("zone", "Market Zone") if user_info else "Market Zone"
-)
-
-# Main App Header Dashboard preview for verified session
-st.title("💼 SusuFlow Enterprise Command Centre")
-st.success(
-    f"Logged in as: **{current_agent_name}** | Role: **{current_role.upper()}**"
-    f" | Zone: **{current_zone}**")
-
-from datetime import datetime
-import hashlib
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -148,10 +17,19 @@ st.set_page_config(
 
 
 # ==========================================
-# 2. DATABASE INITIALIZATION & OPERATIONS
+# 2. ISOLATED DATABASE MANAGEMENT PER USER
 # ==========================================
-def init_db():
-  conn = sqlite3.connect("susuflow.db", check_same_thread=False)
+def get_user_db_path(username):
+  """Returns a dedicated, isolated database filename for each user/collector."""
+  # Master admin gets a consolidated view or management database, collectors get isolated files
+  if username == "rog3rs_admin":
+    return "master_agency.db"
+  else:
+    return f"db_{username}.db"
+
+
+def init_db(db_path):
+  conn = sqlite3.connect(db_path, check_same_thread=False)
   cursor = conn.cursor()
 
   cursor.execute("""
@@ -177,7 +55,14 @@ def init_db():
             notes TEXT
         )
     """)
+  conn.commit()
+  return conn
 
+
+# Master Access Control DB (Shared only for manager approvals)
+def init_master_access_db():
+  conn = sqlite3.connect("master_access.db", check_same_thread=False)
+  cursor = conn.cursor()
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS collector_access (
             collector_id TEXT PRIMARY KEY,
@@ -188,79 +73,11 @@ def init_db():
   return conn
 
 
-db_conn = init_db()
-
-
-def get_registered_clients():
-  return pd.read_sql("SELECT * FROM clients", db_conn)
-
-
-def get_collector_client_count(collector_id):
-  cursor = db_conn.cursor()
-  cursor.execute(
-      "SELECT COUNT(*) FROM clients WHERE registered_by = ?", (collector_id,)
-  )
-  row = cursor.fetchone()
-  return row[0] if row else 0
-
-
-def save_client(client_id, full_name, phone_number, market_zone, registered_by):
-  cursor = db_conn.cursor()
-  cursor.execute(
-      """
-        INSERT OR REPLACE INTO clients (client_id, full_name, phone_number, market_zone, registration_date, registered_by)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """,
-      (
-          client_id,
-          full_name,
-          phone_number,
-          market_zone,
-          datetime.now().strftime("%Y-%m-%d"),
-          registered_by,
-      ),
-  )
-  db_conn.commit()
-
-
-def get_transactions():
-  return pd.read_sql(
-      "SELECT * FROM transactions ORDER BY timestamp DESC", db_conn
-  )
-
-
-def save_transaction(
-    tx_id,
-    timestamp,
-    client_id,
-    client_name,
-    collector_id,
-    frequency,
-    amount,
-    notes,
-):
-  cursor = db_conn.cursor()
-  cursor.execute(
-      """
-        INSERT INTO transactions (transaction_id, timestamp, client_id, client_name, collector_id, frequency, amount, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-      (
-          tx_id,
-          timestamp,
-          client_id,
-          client_name,
-          collector_id,
-          frequency,
-          amount,
-          notes,
-      ),
-  )
-  db_conn.commit()
+master_access_conn = init_master_access_db()
 
 
 def get_collector_approval(collector_id, default_val=False):
-  cursor = db_conn.cursor()
+  cursor = master_access_conn.cursor()
   cursor.execute(
       "SELECT is_approved FROM collector_access WHERE collector_id = ?",
       (collector_id,),
@@ -272,7 +89,7 @@ def get_collector_approval(collector_id, default_val=False):
 
 
 def set_collector_approval(collector_id, status):
-  cursor = db_conn.cursor()
+  cursor = master_access_conn.cursor()
   cursor.execute(
       """
         INSERT OR REPLACE INTO collector_access (collector_id, is_approved)
@@ -280,11 +97,11 @@ def set_collector_approval(collector_id, status):
     """,
       (collector_id, 1 if status else 0),
   )
-  db_conn.commit()
+  master_access_conn.commit()
 
 
 # ==========================================
-# 3. USER DIRECTORY & SUBSCRIPTION PERIOD LOGIC
+# 3. USER DIRECTORY & SUBSCRIPTION LOGIC
 # ==========================================
 def load_users():
   users = {}
@@ -368,14 +185,14 @@ if not is_active:
       " subscription package, please contact system administration."
   )
   st.stop()
-
-
-# ==========================================
+  
+  
+  # ==========================================
 # 6. SIDEBAR AUTHENTICATION GATE
 # ==========================================
 if not st.session_state.auth_user:
   st.sidebar.markdown("### 🔐 SusuFlow Enterprise Login")
-  st.sidebar.caption("50-Collector Micro-Savings & Credit Risk Platform")
+  st.sidebar.caption("Isolated Space Per Collector Platform")
 
   selected_user_id = st.sidebar.selectbox(
       "Select Operator Account",
@@ -412,9 +229,10 @@ if not st.session_state.auth_user:
       st.sidebar.error("❌ Invalid password for selected operator.")
 
   st.stop()
-  
-  # ==========================================
-# 7. MAIN APP DASHBOARD & MODULES
+
+
+# ==========================================
+# 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 user_info = st.session_state.get("user_info", {})
 current_role = user_info.get("role", "collector") if user_info else "collector"
@@ -424,12 +242,70 @@ current_agent_name = (
 current_zone = (
     user_info.get("zone", "Market Zone") if user_info else "Market Zone"
 )
+current_user_id = st.session_state.auth_user
+
+# Connect to THIS specific user's isolated database file
+user_db_path = get_user_db_path(current_user_id)
+agent_db_conn = init_db(user_db_path)
+
+
+def get_my_clients():
+  return pd.read_sql("SELECT * FROM clients", agent_db_conn)
+
+
+def save_my_client(client_id, full_name, phone_number, market_zone):
+  cursor = agent_db_conn.cursor()
+  cursor.execute(
+      """
+        INSERT OR REPLACE INTO clients (client_id, full_name, phone_number, market_zone, registration_date, registered_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """,
+      (
+          client_id,
+          full_name,
+          phone_number,
+          market_zone,
+          datetime.now().strftime("%Y-%m-%d"),
+          current_user_id,
+      ),
+  )
+  agent_db_conn.commit()
+
+
+def get_my_transactions():
+  return pd.read_sql(
+      "SELECT * FROM transactions ORDER BY timestamp DESC", agent_db_conn
+  )
+
+
+def save_my_transaction(
+    tx_id, timestamp, client_id, client_name, frequency, amount, notes
+):
+  cursor = agent_db_conn.cursor()
+  cursor.execute(
+      """
+        INSERT INTO transactions (transaction_id, timestamp, client_id, client_name, collector_id, frequency, amount, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+      (
+          tx_id,
+          timestamp,
+          client_id,
+          client_name,
+          current_user_id,
+          frequency,
+          amount,
+          notes,
+      ),
+  )
+  agent_db_conn.commit()
+
 
 # Sidebar User Info & Logout
 st.sidebar.markdown(f"### 👤 Operator: {current_agent_name}")
 st.sidebar.info(
-    f"Role: **{current_role.upper()}**\n\nZone: **{current_zone}**\n\nLicence:"
-    " **Active**"
+    f"Role: **{current_role.upper()}**\n\nZone:"
+    f" **{current_zone}**\n\nStorage: **Isolated Cloud Space**"
 )
 if st.sidebar.button("Log Out Session", use_container_width=True):
   st.session_state.auth_user = None
@@ -439,19 +315,19 @@ if st.sidebar.button("Log Out Session", use_container_width=True):
 
 st.title("💼 SusuFlow Enterprise Command Centre")
 st.markdown(
-    f"*Database-Backed Micro-Savings, Ledger & 40-Client Per-Agent Quota System*"
+    f"*Secure, Private Collector Workspace (Data Isolated Per Agent)*"
 )
 st.markdown("---")
 
 # Main Application Tabs
 tab_list = [
-    "👥 Client Registration",
-    "📥 Daily / Weekly Transactions",
-    "📊 Loan Qualification & Savings Audit",
+    "👥 My Client Registration",
+    "📥 My Daily / Weekly Transactions",
+    "📊 My Loan Qualification Audit",
 ]
 if current_role == "manager":
   tab_list.append("⚙️ Collector Access Control")
-  tab_list.append("🏢 Agency Overview")
+  tab_list.append("🏢 Master Agency Overview")
 
 tabs = st.tabs(tab_list)
 tab1 = tabs[0]
@@ -460,25 +336,23 @@ tab3 = tabs[2]
 tab_access = tabs[3] if current_role == "manager" else None
 tab_overview = tabs[4] if current_role == "manager" else None
 
-# --- TAB 1: CLIENT REGISTRATION (ENFORCING 40 CLIENT CAP PER COLLECTOR) ---
+# --- TAB 1: CLIENT REGISTRATION (ISOLATED TO AGENT'S DATABASE) ---
 with tab1:
-  st.markdown("### Register New Susu Client")
+  st.markdown("### Register New Susu Client (Private to You)")
 
-  # Calculate current registered count for logged-in user
-  current_agent_id = st.session_state.auth_user
-  registered_count = get_collector_client_count(current_agent_id)
-  max_allowed = 40
+  df_my_clients = get_my_clients()
+  registered_count = len(df_my_clients)
+  max_allowed = 40  # Maximum cap per collector
 
   st.metric(
-      "Your Client Registration Quota",
+      "Your Personal Client Quota",
       f"{registered_count} / {max_allowed} Clients Registered",
   )
 
   if current_role == "collector" and registered_count >= max_allowed:
     st.error(
-        "🚫 **Registration Limit Reached:** You have reached your maximum quota"
-        f" of {max_allowed} registered clients. You cannot register new"
-        " clients until quota space is cleared."
+        "🚫 **Quota Reached:** You have reached your individual limit of 40"
+        " clients in your private workspace."
     )
   else:
     with st.form("client_reg_form", clear_on_submit=True):
@@ -494,60 +368,56 @@ with tab1:
         )
 
       submit_client = st.form_submit_button(
-          "Register Client Profile", use_container_width=True
+          "Register Client to My Private Space", use_container_width=True
       )
 
       if submit_client:
         if not c_name or not c_phone:
           st.error("❌ Please provide both client name and phone number.")
         else:
-          # Double check quota before saving
-          if (
-              current_role == "collector"
-              and get_collector_client_count(current_agent_id) >= max_allowed
-          ):
-            st.error("❌ Quota limit exceeded. Registration blocked.")
+          if len(get_my_clients()) >= max_allowed:
+            st.error("❌ Quota limit reached. Registration blocked.")
           else:
-            save_client(
-                c_id, c_name, c_phone, c_zone, current_agent_id
-            )
+            save_my_client(c_id, c_name, c_phone, c_zone)
             st.success(
-                f"✅ Client **{c_name}** successfully registered with ID"
-                f" **{c_id}**!"
+                f"✅ Client **{c_name}** successfully registered in your private"
+                f" space with ID **{c_id}**!"
             )
             st.rerun()
 
-  st.markdown("#### Registered Clients Database Directory")
-  df_clients = get_registered_clients()
-  if df_clients.empty:
-    st.info("ℹ️ No clients registered in the database yet.")
+  st.markdown("#### Your Private Registered Clients Directory")
+  if df_my_clients.empty:
+    st.info(
+        "ℹ️ No clients registered in your private space yet. Your records are"
+        " completely hidden from other collectors."
+    )
   else:
-    st.dataframe(df_clients, use_container_width=True)
+    st.dataframe(df_my_clients, use_container_width=True)
 
 # --- TAB 2: DAILY / WEEKLY TRANSACTIONS & INSTANT RECEIPT ---
 with tab2:
   st.markdown("### Record Daily or Weekly Contributions")
   st.caption(
-      "Log regular savings deposits. Data is committed directly to permanent"
-      " storage."
+      "Log regular savings deposits to your private ledger and generate instant"
+      " receipts."
   )
 
-  df_clients = get_registered_clients()
+  df_my_clients = get_my_clients()
 
-  if df_clients.empty:
+  if df_my_clients.empty:
     st.warning(
-        "⚠️ Please register at least one client in the 'Client Registration'"
+        "⚠️ Please register at least one client in your 'Client Registration'"
         " tab before posting transactions."
     )
   else:
     with st.form("tx_form", clear_on_submit=True):
       col1, col2 = st.columns(2)
       with col1:
-        client_options = df_clients["client_id"].tolist()
+        client_options = df_my_clients["client_id"].tolist()
         selected_client_id = st.selectbox(
             "Select Client Account",
             options=client_options,
-            format_func=lambda x: f"{x} - {df_clients.loc[df_clients['client_id'] == x, 'full_name'].values[0]}",
+            format_func=lambda x: f"{x} - {df_my_clients.loc[df_my_clients['client_id'] == x, 'full_name'].values[0]}",
         )
         frequency = st.selectbox(
             "Contribution Frequency", ["Daily Contribution", "Weekly Deposit"]
@@ -566,18 +436,17 @@ with tab2:
         if amount <= 0:
           st.error("❌ Contribution amount must be greater than zero.")
         else:
-          client_name = df_clients.loc[
-              df_clients["client_id"] == selected_client_id, "full_name"
+          client_name = df_my_clients.loc[
+              df_my_clients["client_id"] == selected_client_id, "full_name"
           ].values[0]
           tx_id = f"TXN-{datetime.now().strftime('%Y%m%d%H%M%S')}"
           tx_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-          save_transaction(
+          save_my_transaction(
               tx_id,
               tx_timestamp,
               selected_client_id,
               client_name,
-              st.session_state.auth_user,
               frequency,
               amount,
               notes,
@@ -588,7 +457,7 @@ with tab2:
               "Timestamp": tx_timestamp,
               "Client ID": selected_client_id,
               "Client Name": client_name,
-              "Collector ID": st.session_state.auth_user,
+              "Collector ID": current_user_id,
               "Frequency": frequency,
               "Amount (GHS)": amount,
               "Notes": notes,
@@ -617,7 +486,7 @@ with tab2:
                 <p><b>Field Collector:</b> {r['Collector ID']} ({current_agent_name})</p>
                 <p><b>Remarks:</b> {r['Notes']}</p>
                 <hr style="border: 0.5px solid #ccc;">
-                <p style="text-align: center; font-size: 0.8em; color: #777;">Saved securely in database.</p>
+                <p style="text-align: center; font-size: 0.8em; color: #777;">Saved securely in your private cloud space.</p>
             </div>
             """,
           unsafe_allow_html=True,
@@ -642,32 +511,31 @@ with tab2:
           mime="text/plain",
       )
 
-  st.markdown("#### Persistent Transaction Ledger")
-  df_tx = get_transactions()
+  st.markdown("#### Your Private Transaction Ledger")
+  df_tx = get_my_transactions()
   if df_tx.empty:
-    st.info("ℹ️ No transactions recorded in database yet.")
+    st.info("ℹ️ No transactions recorded in your private space yet.")
   else:
     st.dataframe(df_tx, use_container_width=True)
     csv_bytes = df_tx.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Download Full Database Ledger (CSV)",
+        label="📥 Download My Ledger (CSV)",
         data=csv_bytes,
-        file_name=f"susuflow_database_ledger_{datetime.now().strftime('%Y-%m-%d')}.csv",
+        file_name=f"susuflow_private_ledger_{current_user_id}_{datetime.now().strftime('%Y-%m-%d')}.csv",
         mime="text/csv",
     )
 
 # --- TAB 3: LOAN QUALIFICATION & SAVINGS AUDIT ---
 with tab3:
-  st.markdown("### 💳 Client Savings Balance & Loan Qualification Tracker")
+  st.markdown("### 💳 Your Clients' Loan Qualification Tracker")
   st.caption(
-      "Calculates total lifetime deposits from database records to determine"
-      " loan eligibility tiers."
+      "Calculates lifetime savings per client inside your private ledger."
   )
 
-  df_clients = get_registered_clients()
-  df_tx = get_transactions()
+  df_my_clients = get_my_clients()
+  df_tx = get_my_transactions()
 
-  if df_clients.empty:
+  if df_my_clients.empty:
     st.info("ℹ️ No client data available for loan qualification assessment.")
   else:
     if not df_tx.empty:
@@ -681,14 +549,14 @@ with tab3:
           inplace=True,
       )
     else:
-      summary_df = df_clients[["client_id", "full_name"]].copy()
+      summary_df = df_my_clients[["client_id", "full_name"]].copy()
       summary_df.rename(
           columns={"client_id": "Client ID", "full_name": "Client Name"},
           inplace=True,
       )
       summary_df["Amount (GHS)"] = 0.0
 
-    df_clients.rename(
+    df_my_clients.rename(
         columns={
             "client_id": "Client ID",
             "full_name": "Full Name",
@@ -698,7 +566,7 @@ with tab3:
         inplace=True,
     )
     merged_summary = pd.merge(
-        df_clients[["Client ID", "Full Name", "Phone Number", "Market Zone"]],
+        df_my_clients[["Client ID", "Full Name", "Phone Number", "Market Zone"]],
         summary_df[["Client ID", "Amount (GHS)"]],
         on="Client ID",
         how="left",
@@ -726,7 +594,8 @@ if tab_access:
   with tab_access:
     st.markdown("### ⚙️ Field Collector Access & Authorization Control")
     st.caption(
-        "Manage collector permissions and view their registration quotas."
+        "Authorize collector accounts before they can access their private"
+        " workspaces."
     )
 
     collector_items = [
@@ -757,7 +626,7 @@ if tab_access:
     with action_col1:
       if st.button("✅ Grant Access to Agent", use_container_width=True):
         set_collector_approval(target_collector, True)
-        st.success(f"Access granted and saved for {target_collector}!")
+        st.success(f"Access granted for {target_collector}!")
         st.rerun()
     with action_col2:
       if st.button("🚫 Revoke Access", use_container_width=True):
@@ -765,7 +634,7 @@ if tab_access:
         st.warning(f"Access revoked for {target_collector}.")
         st.rerun()
 
-    st.markdown("#### Full Roster Authorization & Quota Status")
+    st.markdown("#### Full Roster Authorization Status")
     status_df = pd.DataFrame([
         {
             "Agent ID": uid,
@@ -776,22 +645,56 @@ if tab_access:
                 if get_collector_approval(uid, default_val=False)
                 else "Locked"
             ),
-            "Clients Registered": f"{get_collector_client_count(uid)} / 40",
         }
         for uid, data in users_dict.items()
         if data.get("role") == "collector"
     ])
     st.dataframe(status_df, use_container_width=True)
 
-# --- TAB 5: AGENCY OVERVIEW (MANAGER ONLY) ---
+# --- TAB 5: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
 if tab_overview:
   with tab_overview:
-    st.markdown("### 🏢 Executive Agency Performance Overview")
-    df_tx = get_transactions()
-    df_clients = get_registered_clients()
+    st.markdown("### 🏢 Executive Master Agency Overview")
+    st.caption(
+        "Aggregates data across all collector private spaces for high-level"
+        " auditing and decisions."
+    )
+
+    # Collect data from all individual collector databases
+    all_agency_clients = []
+    all_agency_tx = []
+
+    for uid, data in users_dict.items():
+      if data.get("role") == "collector":
+        db_path = get_user_db_path(uid)
+        if os.path.exists(db_path):
+          try:
+            temp_conn = sqlite3.connect(db_path)
+            c_df = pd.read_sql("SELECT * FROM clients", temp_conn)
+            t_df = pd.read_sql("SELECT * FROM transactions", temp_conn)
+            temp_conn.close()
+            if not c_df.empty:
+              all_agency_clients.append(c_df)
+            if not t_df.empty:
+              all_agency_tx.append(t_df)
+          except Exception:
+            pass
+
+    master_clients_df = (
+        pd.concat(all_agency_clients, ignore_index=True)
+        if all_agency_clients
+        else pd.DataFrame()
+    )
+    master_tx_df = (
+        pd.concat(all_agency_tx, ignore_index=True)
+        if all_agency_tx
+        else pd.DataFrame()
+    )
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Total Registered Clients", len(df_clients))
+    total_clients_count = len(master_clients_df)
+    m1.metric("Total Agency Clients", f"{total_clients_count} Registered")
+
     active_count = sum(
         1
         for uid in users_dict.keys()
@@ -799,13 +702,21 @@ if tab_overview:
         and get_collector_approval(uid, default_val=False)
     )
     m1.metric("Active Authorized Agents", f"{active_count} / 50 Deployed")
-    total_vol = df_tx["amount"].sum() if not df_tx.empty else 0.0
-    m2.metric("Total Database Inflow", f"GHS {total_vol:,.2f}")
+
+    total_vol = (
+        master_tx_df["amount"].sum() if not master_tx_df.empty else 0.0
+    )
+    m2.metric("Total Agency Inflow", f"GHS {total_vol:,.2f}")
     m3.metric("Subscription Window", "Active (2026)")
 
-    st.markdown("#### Contribution Distribution by Frequency")
-    if not df_tx.empty:
-      freq_chart = df_tx.groupby("frequency")["amount"].sum().reset_index()
+    st.markdown("#### Aggregated Agency Transaction Inflows")
+    if not master_tx_df.empty:
+      freq_chart = (
+          master_tx_df.groupby("frequency")["amount"].sum().reset_index()
+      )
       st.bar_chart(freq_chart.set_index("frequency"))
+
+      st.markdown("#### Complete Master Client Directory (All Agents)")
+      st.dataframe(master_clients_df, use_container_width=True)
     else:
-      st.info("ℹ️ Awaiting transaction data to generate charts.")
+      st.info("ℹ️ No transactions recorded across agent workspaces yet.")
