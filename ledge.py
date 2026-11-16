@@ -413,12 +413,12 @@ if not st.session_state.auth_user:
     st.markdown(
         """
         <div class="landing-banner">
-            <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ Alufa Keep Records  Enterprise"
+            <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ Alufa Keep Records Enterprise
             </h1>
-            <p style="font-size: 1.1em; color: #d0d7de;">Secure, multi-tenant micro-finance management platform engineered for field agents and executive oversight.</p>
+            <p style="font-size: 1.1em; color: #d0d7de;">Secure, multi-tenant micro-business management platform engineered for field agents and executive oversight.</p>
             <hr style="border-color: rgba(255,255,255,0.2);">
             <ul style="list-style-type: none; padding-left: 0; line-height: 2.2em; font-size: 1.05em;">
-                <li>👥 <b>Client Registration & Search:</b> Manage up to 100+ private clients per agent.</li>
+                <li>👥 <b>Client Regist & Search:</b> Manage up to 100+ private clients per agent.</li>
                 <li>🧭 <b>Route Planner:</b> Organize market zones and daily visitation stops.</li>
                 <li>📥 <b>Instant Receipts & Dispatch:</b> Share digital receipts via WhatsApp and Gmail.</li>
                 <li>💰 <b>EOD Cash Reconciliation:</b> Reconcile physical collections instantly.</li>
