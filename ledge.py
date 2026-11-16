@@ -253,7 +253,11 @@ login_button = st.sidebar.button("Authorize Access")
 # ==============================================================================
 all_members_df, all_txns_df = load_data()
 current_uid = st.session_state.auth_user
-current_role = st.session_state.user_info["role"]
+
+# Safely fetch user role without crashing if user_info is None
+user_info = st.session_state.get("user_info")
+current_role = user_info.get("role") if user_info else "collector"
+
 current_name = st.session_state.user_info["full_name"]
 current_zone = st.session_state.user_info["zone"]
 
