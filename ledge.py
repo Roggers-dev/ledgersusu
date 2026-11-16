@@ -38,12 +38,19 @@ def init_auth_db():
             role TEXT,
             is_approved INTEGER,
             allow_edit INTEGER,
-            is_frozen INTEGER DEFAULT 0
+            is_frozen INTEGER DEFAULT 0,
+            max_clients INTEGER DEFAULT 100
         )
     """)
   try:
     cursor.execute(
         "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0"
+    )
+  except sqlite3.OperationalError:
+    pass
+  try:
+    cursor.execute(
+        "ALTER TABLE users ADD COLUMN max_clients INTEGER DEFAULT 100"
     )
   except sqlite3.OperationalError:
     pass
@@ -60,8 +67,8 @@ def register_user(username, password_hash, full_name, zone, role="collector"):
     is_approved = 1 if role == "manager" else 0
     cursor.execute(
         """
-            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit, is_frozen)
-            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit, is_frozen, max_clients)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0, 100)
         """,
         (username, password_hash, full_name, zone, role, is_approved),
     )
@@ -75,7 +82,7 @@ def get_user_credentials(username):
   cursor = auth_conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, full_name, zone, role, is_approved,"
-      " allow_edit, is_frozen FROM users WHERE username = ?",
+      " allow_edit, is_frozen, max_clients FROM users WHERE username = ?",
       (username,),
   )
   row = cursor.fetchone()
@@ -89,6 +96,7 @@ def get_user_credentials(username):
         "is_approved": row[5],
         "allow_edit": row[6],
         "is_frozen": row[7],
+        "max_clients": row[8] if row[8] is not None else 100,
     }
   return None
 
@@ -97,7 +105,7 @@ def get_all_users_dict():
   cursor = auth_conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, full_name, zone, role, is_approved,"
-      " allow_edit, is_frozen FROM users"
+      " allow_edit, is_frozen, max_clients FROM users"
   )
   rows = cursor.fetchall()
   users = {}
@@ -110,20 +118,24 @@ def get_all_users_dict():
         "is_approved": row[5],
         "allow_edit": row[6],
         "is_frozen": row[7],
+        "max_clients": row[8] if row[8] is not None else 100,
     }
   return users
 
 
-def update_user_privileges(username, is_approved, allow_edit, is_frozen):
+def update_user_privileges(
+    username, is_approved, allow_edit, is_frozen, max_clients
+):
   cursor = auth_conn.cursor()
   cursor.execute(
       """
-        UPDATE users SET is_approved = ?, allow_edit = ?, is_frozen = ? WHERE username = ?
+        UPDATE users SET is_approved = ?, allow_edit = ?, is_frozen = ?, max_clients = ? WHERE username = ?
     """,
       (
           1 if is_approved else 0,
           1 if allow_edit else 0,
           1 if is_frozen else 0,
+          int(max_clients),
           username,
       ),
   )
@@ -141,7 +153,11 @@ if not get_user_credentials("rog3rs_admin"):
       role="manager",
   )
   update_user_privileges(
-      "rog3rs_admin", is_approved=True, allow_edit=True, is_frozen=False
+      "rog3rs_admin",
+      is_approved=True,
+      allow_edit=True,
+      is_frozen=False,
+      max_clients=1000,
   )
 
 
@@ -181,7 +197,6 @@ def init_user_db(db_path):
     """)
   conn.commit()
   return conn
-
 
 # ==========================================
 # 3. SUBSCRIPTION PERIOD LOGIC
@@ -304,8 +319,9 @@ if not st.session_state.auth_user:
           st.sidebar.error(f"❌ {msg}")
 
   st.stop()
-  
-  # ==========================================
+
+
+# ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 current_user_id = st.session_state.auth_user
@@ -327,6 +343,7 @@ current_zone = fresh_user_data.get("zone", "Market Zone")
 user_allow_edit = (
     1 if current_role == "manager" else fresh_user_data.get("allow_edit", 0)
 )
+user_max_clients = fresh_user_data.get("max_clients", 100)
 
 user_db_path = get_user_db_path(current_user_id)
 agent_db_conn = init_user_db(user_db_path)
@@ -403,7 +420,8 @@ edit_status_badge = (
 )
 st.sidebar.info(
     f"Role: **{current_role.upper()}**\n\nZone:"
-    f" **{current_zone}**\n\nPrivilege: **{edit_status_badge}**"
+    f" **{current_zone}**\n\nClient Quota Limit: **{user_max_clients}**\n\nPrivilege:"
+    f" **{edit_status_badge}**"
 )
 if st.sidebar.button("Log Out Session", use_container_width=True):
   st.session_state.auth_user = None
@@ -439,7 +457,7 @@ with tab1:
   st.markdown("### Register New Susu Client (Private Space)")
   df_my_clients = get_my_clients()
   registered_count = len(df_my_clients)
-  max_allowed = 40
+  max_allowed = user_max_clients
 
   st.metric(
       "Your Personal Client Quota",
@@ -448,8 +466,9 @@ with tab1:
 
   if current_role == "collector" and registered_count >= max_allowed:
     st.error(
-        "🚫 **Quota Reached:** You have reached your individual limit of 40"
-        " clients."
+        f"🚫 **Quota Reached:** You have reached your individual limit of"
+        f" {max_allowed} clients. Please contact Master Admin to upgrade your"
+        " quota limit."
     )
   else:
     with st.form("client_reg_form", clear_on_submit=True):
@@ -526,8 +545,8 @@ with tab1:
       filtered_clients = merged_client_view
 
     st.dataframe(filtered_clients, use_container_width=True)
-
-# --- TAB 2: COLLECTOR ROUTE PLANNER ---
+    
+    # --- TAB 2: COLLECTOR ROUTE PLANNER ---
 with tab_route:
   st.markdown("### 🧭 Daily Route & Collection Planner")
   st.caption(
@@ -570,8 +589,8 @@ with tab_route:
         ]],
         use_container_width=True,
     )
-    
-    # --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
+
+# --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
 with tab2:
   st.markdown("### Record Contributions & End-of-Day (EOD) Reconciliation")
   df_my_clients = get_my_clients()
@@ -886,7 +905,10 @@ with tab3:
 # --- TAB 5: COLLECTOR ACCESS & SECURITY CONTROL (MANAGER ONLY) ---
 if tab_access:
   with tab_access:
-    st.markdown("### ⚙️ Collector Authorization, Edit Privileges & Account Freeze")
+    st.markdown(
+        "### ⚙️ Collector Authorization, Edit Privileges, Quota & Account"
+        " Freeze"
+    )
     users_dict = get_all_users_dict()
     collector_items = [
         (uid, data)
@@ -908,6 +930,7 @@ if tab_access:
       cur_app = users_dict[target_collector].get("is_approved", 0)
       cur_edit = users_dict[target_collector].get("allow_edit", 0)
       cur_frozen = users_dict[target_collector].get("is_frozen", 0)
+      cur_quota = users_dict[target_collector].get("max_clients", 100)
 
       with col_ctrl2:
         status_text = (
@@ -917,9 +940,36 @@ if tab_access:
         )
         st.markdown(
             f"**Status:** {status_text}\n\n**Edit Rights:**"
-            f" {'🔓 Allowed' if cur_edit else '🔒 Restricted'}"
+            f" {'🔓 Allowed' if cur_edit else '🔒 Restricted'}\n\n**Client"
+            f" Quota:** {cur_quota}"
         )
 
+      st.markdown("#### 💳 Adjust Client Quota (Payment Condition)")
+      with st.form("adjust_quota_form"):
+        new_quota_val = st.number_input(
+            "Set Maximum Client Quota Limit for Agent",
+            min_value=1,
+            max_value=1000,
+            value=int(cur_quota),
+        )
+        update_quota_btn = st.form_submit_button(
+            "Update Quota Limit (Paid Tier)"
+        )
+        if update_quota_btn:
+          update_user_privileges(
+              target_collector,
+              is_approved=cur_app,
+              allow_edit=cur_edit,
+              is_frozen=cur_frozen,
+              max_clients=new_quota_val,
+          )
+          st.success(
+              f"✅ Quota limit for {target_collector} successfully updated to"
+              f" {new_quota_val} clients!"
+          )
+          st.rerun()
+
+      st.markdown("---")
       action_col1, action_col2, action_col3, action_col4 = st.columns(4)
       with action_col1:
         if st.button("✅ Authorize Agent", use_container_width=True):
@@ -928,6 +978,7 @@ if tab_access:
               is_approved=True,
               allow_edit=cur_edit,
               is_frozen=cur_frozen,
+              max_clients=cur_quota,
           )
           st.success(f"Agent {target_collector} authorized!")
           st.rerun()
@@ -938,6 +989,7 @@ if tab_access:
               is_approved=cur_app,
               allow_edit=True,
               is_frozen=cur_frozen,
+              max_clients=cur_quota,
           )
           st.success(f"Edit privileges granted to {target_collector}!")
           st.rerun()
@@ -948,6 +1000,7 @@ if tab_access:
               is_approved=cur_app,
               allow_edit=False,
               is_frozen=cur_frozen,
+              max_clients=cur_quota,
           )
           st.warning(f"Edit privileges revoked for {target_collector}.")
           st.rerun()
@@ -959,6 +1012,7 @@ if tab_access:
                 is_approved=cur_app,
                 allow_edit=cur_edit,
                 is_frozen=False,
+                max_clients=cur_quota,
             )
             st.success(f"Account {target_collector} unfrozen!")
             st.rerun()
@@ -969,13 +1023,27 @@ if tab_access:
                 is_approved=cur_app,
                 allow_edit=cur_edit,
                 is_frozen=True,
+                max_clients=cur_quota,
             )
             st.error(f"Account {target_collector} frozen!")
             st.rerun()
 
-      st.markdown("#### Full Roster Security & Privilege Status")
-      status_df = pd.DataFrame([
-          {
+      st.markdown("#### Full Roster Security, Quota & Privilege Status")
+      roster_data = []
+      for uid, data in users_dict.items():
+        if data.get("role") == "collector":
+          agent_db = get_user_db_path(uid)
+          c_count = 0
+          if os.path.exists(agent_db):
+            try:
+              t_conn = sqlite3.connect(agent_db)
+              c_df = pd.read_sql("SELECT COUNT(*) FROM clients", t_conn)
+              t_conn.close()
+              c_count = int(c_df.iloc[0, 0])
+            except Exception:
+              pass
+
+          roster_data.append({
               "Username": uid,
               "Full Name": data.get("full_name"),
               "Zone": data.get("zone"),
@@ -987,10 +1055,12 @@ if tab_access:
               "Edit Rights": (
                   "Allowed" if data.get("allow_edit") else "Restricted"
               ),
-          }
-          for uid, data in users_dict.items()
-          if data.get("role") == "collector"
-      ])
+              "Registered / Max Quota": (
+                  f"{c_count} / {data.get('max_clients', 100)}"
+              ),
+          })
+
+      status_df = pd.DataFrame(roster_data)
       st.dataframe(status_df, use_container_width=True)
 
 # --- TAB 6: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
