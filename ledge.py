@@ -413,7 +413,8 @@ if not st.session_state.auth_user:
     st.markdown(
         """
         <div class="landing-banner">
-            <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ SusuFlow Enterprise</h1>
+            <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ Alufa Keep Records  Enterprise"
+            </h1>
             <p style="font-size: 1.1em; color: #d0d7de;">Secure, multi-tenant micro-finance management platform engineered for field agents and executive oversight.</p>
             <hr style="border-color: rgba(255,255,255,0.2);">
             <ul style="list-style-type: none; padding-left: 0; line-height: 2.2em; font-size: 1.05em;">
@@ -448,7 +449,7 @@ if not st.session_state.auth_user:
     if auth_mode == "Log In":
       st.sidebar.subheader("Operator Login")
       login_user = st.sidebar.text_input(
-          "Username", placeholder="Enter your signed up username"
+          "Username", placeholder="Enter your username here!"
       ).strip()
       login_pass = st.sidebar.text_input(
           "Password", type="password", placeholder="Enter your secure password"
