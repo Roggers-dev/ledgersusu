@@ -39,33 +39,32 @@ def init_auth_db():
             is_approved INTEGER,
             allow_edit INTEGER,
             is_frozen INTEGER DEFAULT 0,
-            max_clients INTEGER DEFAULT 100
+            max_clients INTEGER DEFAULT 100,
+            recovery_contact TEXT DEFAULT ''
         )
     """)
-  # Global Settings Table for App-Wide Limits
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     """)
-  # Set default global client limit if not exists
   cursor.execute(
-      "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('global_client_limit', '5000')"
+      "INSERT OR IGNORE INTO app_settings (key, value) VALUES"
+      " ('global_client_limit', '5000')"
   )
 
-  try:
-    cursor.execute(
-        "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0"
-    )
-  except sqlite3.OperationalError:
-    pass
-  try:
-    cursor.execute(
-        "ALTER TABLE users ADD COLUMN max_clients INTEGER DEFAULT 100"
-    )
-  except sqlite3.OperationalError:
-    pass
+  # Safe schema migrations for existing databases
+  for col_sql in [
+      "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0",
+      "ALTER TABLE users ADD COLUMN max_clients INTEGER DEFAULT 100",
+      "ALTER TABLE users ADD COLUMN recovery_contact TEXT DEFAULT ''",
+  ]:
+    try:
+      cursor.execute(col_sql)
+    except sqlite3.OperationalError:
+      pass
+
   conn.commit()
   return conn
 
@@ -92,16 +91,31 @@ def set_global_client_limit(limit_val):
   auth_conn.commit()
 
 
-def register_user(username, password_hash, full_name, zone, role="collector"):
+def register_user(
+    username,
+    password_hash,
+    full_name,
+    zone,
+    role="collector",
+    recovery_contact="",
+):
   cursor = auth_conn.cursor()
   try:
     is_approved = 1 if role == "manager" else 0
     cursor.execute(
         """
-            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit, is_frozen, max_clients)
-            VALUES (?, ?, ?, ?, ?, ?, 0, 0, 100)
+            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit, is_frozen, max_clients, recovery_contact)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0, 100, ?)
         """,
-        (username, password_hash, full_name, zone, role, is_approved),
+        (
+            username,
+            password_hash,
+            full_name,
+            zone,
+            role,
+            is_approved,
+            recovery_contact.strip().lower(),
+        ),
     )
     auth_conn.commit()
     return True, "Registration successful!"
@@ -113,7 +127,8 @@ def get_user_credentials(username):
   cursor = auth_conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, full_name, zone, role, is_approved,"
-      " allow_edit, is_frozen, max_clients FROM users WHERE username = ?",
+      " allow_edit, is_frozen, max_clients, recovery_contact FROM users WHERE"
+      " username = ?",
       (username,),
   )
   row = cursor.fetchone()
@@ -128,6 +143,7 @@ def get_user_credentials(username):
         "allow_edit": row[6],
         "is_frozen": row[7],
         "max_clients": row[8] if row[8] is not None else 100,
+        "recovery_contact": row[9] if row[9] else "",
     }
   return None
 
@@ -136,7 +152,7 @@ def get_all_users_dict():
   cursor = auth_conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, full_name, zone, role, is_approved,"
-      " allow_edit, is_frozen, max_clients FROM users"
+      " allow_edit, is_frozen, max_clients, recovery_contact FROM users"
   )
   rows = cursor.fetchall()
   users = {}
@@ -150,6 +166,7 @@ def get_all_users_dict():
         "allow_edit": row[6],
         "is_frozen": row[7],
         "max_clients": row[8] if row[8] is not None else 100,
+        "recovery_contact": row[9] if row[9] else "",
     }
   return users
 
@@ -183,6 +200,52 @@ def admin_reset_password(username, new_password):
   auth_conn.commit()
 
 
+def self_service_password_reset(username, recovery_input, new_password):
+  user_data = get_user_credentials(username)
+  if not user_data:
+    return False, "Username not found."
+
+  stored_contact = str(user_data.get("recovery_contact", "")).strip().lower()
+  entered_contact = str(recovery_input).strip().lower()
+
+  if not stored_contact:
+    return (
+        False,
+        "No recovery Phone/Gmail set on this account. Please contact Master"
+        " Admin (rog3rs / 0542470810).",
+    )
+
+  # Normalize phone numbers by comparing digits if both contain digits, or exact email match
+  stored_digits = "".join(filter(str.isdigit, stored_contact))
+  entered_digits = "".join(filter(str.isdigit, entered_contact))
+
+  is_match = (stored_contact == entered_contact) or (
+      len(stored_digits) >= 9 and stored_digits == entered_digits
+  )
+
+  if not is_match:
+    return (
+        False,
+        "Phone number or Gmail does not match our records for this username.",
+    )
+
+  admin_reset_password(username, new_password)
+  return (
+      True,
+      "Password reset successful! You can now log in and access your existing"
+      " account.",
+  )
+
+
+def update_recovery_contact(username, new_contact):
+  cursor = auth_conn.cursor()
+  cursor.execute(
+      "UPDATE users SET recovery_contact = ? WHERE username = ?",
+      (new_contact.strip().lower(), username),
+  )
+  auth_conn.commit()
+
+
 # Ensure default Master Admin exists on first run
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
 if not get_user_credentials("rog3rs_admin"):
@@ -192,6 +255,7 @@ if not get_user_credentials("rog3rs_admin"):
       "Koffie Rogers (Master Admin)",
       "All Agency Zones",
       role="manager",
+      recovery_contact="0542470810",
   )
   update_user_privileges(
       "rog3rs_admin",
@@ -291,12 +355,13 @@ if not is_active:
 
 
 # ==========================================
-# 6. SIDEBAR AUTHENTICATION & SIGN-UP GATE
+# 6. SIDEBAR AUTHENTICATION, SIGN-UP & PASSWORD RECOVERY
 # ==========================================
 if not st.session_state.auth_user:
   st.sidebar.markdown("### 🔐 SusuFlow Enterprise Portal")
   auth_mode = st.sidebar.radio(
-      "Select Action", ["Log In", "Sign Up (New Account)"]
+      "Select Action",
+      ["Log In", "Sign Up (New Account)", "Forgot Password (Phone/Gmail)"],
   )
 
   if auth_mode == "Log In":
@@ -329,28 +394,41 @@ if not st.session_state.auth_user:
             st.session_state.last_receipt = None
             st.rerun()
         else:
-          st.sidebar.error("❌ Incorrect password.")
+          st.sidebar.error(
+              "❌ Incorrect password. Use 'Forgot Password' above to recover."
+          )
       else:
         st.sidebar.error(
             "❌ Username not found. Please sign up for a new account."
         )
 
-  else:
+  elif auth_mode == "Sign Up (New Account)":
     st.sidebar.subheader("Create New Account")
     new_user = st.sidebar.text_input("Choose Username").strip()
     new_pass = st.sidebar.text_input("Choose Password", type="password")
     new_name = st.sidebar.text_input("Full Name").strip()
+    new_recovery = st.sidebar.text_input(
+        "Recovery Phone Number or Gmail (Required for Password Reset)"
+    ).strip()
     new_zone = st.sidebar.text_input(
         "Assigned Market Zone", value="Market Zone 1"
     ).strip()
 
     if st.sidebar.button("Register Account", use_container_width=True):
-      if not new_user or not new_pass or not new_name:
-        st.sidebar.error("❌ Please fill in all required fields.")
+      if not new_user or not new_pass or not new_name or not new_recovery:
+        st.sidebar.error(
+            "❌ Please fill in all required fields including Recovery"
+            " Phone/Gmail."
+        )
       else:
         pass_hash = hashlib.sha256(new_pass.encode()).hexdigest()
         success, msg = register_user(
-            new_user, pass_hash, new_name, new_zone, role="collector"
+            new_user,
+            pass_hash,
+            new_name,
+            new_zone,
+            role="collector",
+            recovery_contact=new_recovery,
         )
         if success:
           st.sidebar.success(
@@ -360,10 +438,43 @@ if not st.session_state.auth_user:
         else:
           st.sidebar.error(f"❌ {msg}")
 
+  else:
+    st.sidebar.subheader("🔑 Recover Account Password")
+    st.sidebar.caption(
+        "Verify your registered Phone Number or Gmail to set a new password and"
+        " restore access to your existing records."
+    )
+    rec_user = st.sidebar.text_input("Enter Your Username").strip()
+    rec_contact = st.sidebar.text_input(
+        "Registered Phone Number or Gmail"
+    ).strip()
+    rec_new_pass = st.sidebar.text_input("Enter New Password", type="password")
+    rec_confirm_pass = st.sidebar.text_input(
+        "Confirm New Password", type="password"
+    )
+
+    if st.sidebar.button(
+        "Reset Password & Restore Access", use_container_width=True
+    ):
+      if not rec_user or not rec_contact or not rec_new_pass:
+        st.sidebar.error("❌ Please complete all fields.")
+      elif rec_new_pass != rec_confirm_pass:
+        st.sidebar.error("❌ Passwords do not match.")
+      else:
+        ok, msg = self_service_password_reset(
+            rec_user, rec_contact, rec_new_pass
+        )
+        if ok:
+          st.sidebar.success(f"✅ {msg}")
+        else:
+          st.sidebar.error(f"❌ {msg}")
+
+  st.sidebar.markdown("---")
+  st.sidebar.caption("👨‍💻 **Developer:** rog3rs / 0542470810")
   st.stop()
-  
-  
-  # ==========================================
+
+
+# ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 current_user_id = st.session_state.auth_user
@@ -382,6 +493,7 @@ if not fresh_user_data or fresh_user_data.get("is_frozen", 0) == 1:
 current_role = fresh_user_data.get("role", "collector")
 current_agent_name = fresh_user_data.get("full_name", "Field Agent")
 current_zone = fresh_user_data.get("zone", "Market Zone")
+current_recovery = fresh_user_data.get("recovery_contact", "")
 user_allow_edit = (
     1 if current_role == "manager" else fresh_user_data.get("allow_edit", 0)
 )
@@ -453,26 +565,58 @@ def update_my_transaction(tx_id, frequency, amount, notes):
       (frequency, amount, notes, tx_id),
   )
   agent_db_conn.commit()
-
-
-# Sidebar Info & Logout
+  
+  
+  # Sidebar Info, Security Settings & Logout
 st.sidebar.markdown(f"### 👤 Operator: {current_agent_name}")
 edit_status_badge = (
     "🔓 Edit Rights Granted" if user_allow_edit else "🔒 Locked (No Edit)"
 )
 st.sidebar.info(
     f"Role: **{current_role.upper()}**\n\nZone:"
-    f" **{current_zone}**\n\nClient Quota Limit: **{user_max_clients}**\n\nPrivilege:"
-    f" **{edit_status_badge}**"
+    f" **{current_zone}**\n\nClient Quota Limit:"
+    f" **{user_max_clients}**\n\nPrivilege: **{edit_status_badge}**"
 )
+
+with st.sidebar.expander("🔐 Account Security & Recovery"):
+  st.caption(f"Current Recovery: `{current_recovery or 'Not Set'}`")
+  upd_rec = st.text_input(
+      "Update Phone or Gmail", value=current_recovery, key="upd_rec_input"
+  )
+  if st.button("Save Recovery Info", use_container_width=True):
+    update_recovery_contact(current_user_id, upd_rec)
+    st.success("Recovery contact updated!")
+    st.rerun()
+
+  upd_pwd = st.text_input(
+      "Change Password", type="password", key="upd_pwd_input"
+  )
+  if st.button("Update Password", use_container_width=True):
+    if upd_pwd:
+      admin_reset_password(current_user_id, upd_pwd)
+      st.success("Password updated!")
+
 if st.sidebar.button("Log Out Session", use_container_width=True):
   st.session_state.auth_user = None
   st.session_state.user_info = None
   st.session_state.last_receipt = None
   st.rerun()
 
-st.title("💼 SusuFlow Enterprise Command Centre")
-st.markdown("*Strictly Isolated Private Collector Workspace*")
+st.sidebar.markdown("---")
+st.sidebar.markdown("👨‍💻 **Developer Info:** `rog3rs / 0542470810`")
+
+# Header with Developer Details
+head_col1, head_col2 = st.columns([3, 1])
+with head_col1:
+  st.title("💼 SusuFlow Enterprise Command Centre")
+  st.markdown("*Strictly Isolated Private Collector Workspace*")
+with head_col2:
+  st.markdown(
+      "<div style='text-align: right; padding-top: 20px; font-size: 0.9em;"
+      " color: #888;'><b>Developer:</b> rog3rs<br><b>Contact:</b>"
+      " 0542470810</div>",
+      unsafe_allow_html=True,
+  )
 st.markdown("---")
 
 # Main Application Tabs
@@ -570,12 +714,8 @@ with tab1:
 
   df_tx_all = get_my_transactions()
   if not df_tx_all.empty:
-    client_sums = (
-        df_tx_all.groupby("client_id")["amount"].sum().reset_index()
-    )
-    client_sums.rename(
-        columns={"amount": "Total Savings (GHS)"}, inplace=True
-    )
+    client_sums = df_tx_all.groupby("client_id")["amount"].sum().reset_index()
+    client_sums.rename(columns={"amount": "Total Savings (GHS)"}, inplace=True)
   else:
     client_sums = pd.DataFrame(columns=["client_id", "Total Savings (GHS)"])
 
@@ -609,8 +749,9 @@ with tab1:
       filtered_clients = merged_client_view
 
     st.dataframe(filtered_clients, use_container_width=True)
-
-# --- TAB 2: COLLECTOR ROUTE PLANNER ---
+    
+    
+    # --- TAB 2: COLLECTOR ROUTE PLANNER ---
 with tab_route:
   st.markdown("### 🧭 Daily Route & Collection Planner")
   st.caption(
@@ -653,9 +794,8 @@ with tab_route:
         ]],
         use_container_width=True,
     )
-    
-    
-    # --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
+
+# --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
 with tab2:
   st.markdown("### Record Contributions & End-of-Day (EOD) Reconciliation")
   df_my_clients = get_my_clients()
@@ -797,6 +937,7 @@ with tab2:
       else:
         st.info("ℹ️ Enter client email during posting to enable email button.")
         
+        
         # --- EOD CASH RECONCILIATION BOX ---
   df_tx = get_my_transactions()
   if not df_tx.empty:
@@ -808,9 +949,7 @@ with tab2:
     st.markdown("---")
     st.markdown("### 💰 End-of-Day (EOD) Cash Reconciliation")
     c1, c2 = st.columns(2)
-    c1.metric(
-        "Total Cash Collected Today", f"GHS {today_total_cash:,.2f}"
-    )
+    c1.metric("Total Cash Collected Today", f"GHS {today_total_cash:,.2f}")
     c2.metric("Total Transactions Logged Today", f"{len(today_tx)} Entries")
 
   st.markdown("#### 📝 Transaction Ledger & Edit Management")
@@ -974,7 +1113,6 @@ if tab_access:
         " Freeze"
     )
 
-    # --- GLOBAL AGENCY APP-WIDE CLIENT LIMIT SETTING ---
     st.markdown("#### 🌐 Global Agency-Wide Client Capacity")
     current_global_limit = get_global_client_limit()
     with st.form("global_limit_form"):
@@ -1041,9 +1179,7 @@ if tab_access:
               max_value=1000,
               value=int(cur_quota),
           )
-          update_quota_btn = st.form_submit_button(
-              "Update Quota (Paid Tier)"
-          )
+          update_quota_btn = st.form_submit_button("Update Quota (Paid Tier)")
           if update_quota_btn:
             update_user_privileges(
                 target_collector,
@@ -1151,6 +1287,7 @@ if tab_access:
               "Username": uid,
               "Full Name": data.get("full_name"),
               "Zone": data.get("zone"),
+              "Recovery Contact": data.get("recovery_contact") or "Not Set",
               "Account Status": (
                   "❄️ Frozen"
                   if data.get("is_frozen")
@@ -1166,8 +1303,9 @@ if tab_access:
 
       status_df = pd.DataFrame(roster_data)
       st.dataframe(status_df, use_container_width=True)
-
-# --- TAB 6: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
+      
+      
+      # --- TAB 6: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
 if tab_overview:
   with tab_overview:
     st.markdown("### 🏢 Executive Master Agency Overview")
@@ -1218,3 +1356,9 @@ if tab_overview:
       st.dataframe(master_clients_df, use_container_width=True)
     else:
       st.info("ℹ️ No transactions recorded across agent workspaces yet.")
+
+st.markdown("---")
+st.caption(
+    "SusuFlow Enterprise • Developed by rog3rs / 0542470810 • Isolated"
+    " Multi-Tenant Micro-Finance Platform"
+)
