@@ -34,9 +34,17 @@ def init_auth_db():
             zone TEXT,
             role TEXT,
             is_approved INTEGER,
-            allow_edit INTEGER
+            allow_edit INTEGER,
+            is_frozen INTEGER DEFAULT 0
         )
     """)
+  # Safe migration for older database versions
+  try:
+    cursor.execute(
+        "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0"
+    )
+  except sqlite3.OperationalError:
+    pass
   conn.commit()
   return conn
 
@@ -50,8 +58,8 @@ def register_user(username, password_hash, full_name, zone, role="collector"):
     is_approved = 1 if role == "manager" else 0
     cursor.execute(
         """
-            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit)
-            VALUES (?, ?, ?, ?, ?, ?, 0)
+            INSERT INTO users (username, password_hash, full_name, zone, role, is_approved, allow_edit, is_frozen)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
         """,
         (username, password_hash, full_name, zone, role, is_approved),
     )
@@ -65,7 +73,7 @@ def get_user_credentials(username):
   cursor = auth_conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, full_name, zone, role, is_approved,"
-      " allow_edit FROM users WHERE username = ?",
+      " allow_edit, is_frozen FROM users WHERE username = ?",
       (username,),
   )
   row = cursor.fetchone()
@@ -78,6 +86,7 @@ def get_user_credentials(username):
         "role": row[4],
         "is_approved": row[5],
         "allow_edit": row[6],
+        "is_frozen": row[7],
     }
   return None
 
@@ -86,7 +95,7 @@ def get_all_users_dict():
   cursor = auth_conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, full_name, zone, role, is_approved,"
-      " allow_edit FROM users"
+      " allow_edit, is_frozen FROM users"
   )
   rows = cursor.fetchall()
   users = {}
@@ -98,17 +107,23 @@ def get_all_users_dict():
         "role": row[4],
         "is_approved": row[5],
         "allow_edit": row[6],
+        "is_frozen": row[7],
     }
   return users
 
 
-def update_user_privileges(username, is_approved, allow_edit):
+def update_user_privileges(username, is_approved, allow_edit, is_frozen):
   cursor = auth_conn.cursor()
   cursor.execute(
       """
-        UPDATE users SET is_approved = ?, allow_edit = ? WHERE username = ?
+        UPDATE users SET is_approved = ?, allow_edit = ?, is_frozen = ? WHERE username = ?
     """,
-      (1 if is_approved else 0, 1 if allow_edit else 0, username),
+      (
+          1 if is_approved else 0,
+          1 if allow_edit else 0,
+          1 if is_frozen else 0,
+          username,
+      ),
   )
   auth_conn.commit()
 
@@ -123,7 +138,9 @@ if not get_user_credentials("rog3rs_admin"):
       "All Agency Zones",
       role="manager",
   )
-  update_user_privileges("rog3rs_admin", is_approved=True, allow_edit=True)
+  update_user_privileges(
+      "rog3rs_admin", is_approved=True, allow_edit=True, is_frozen=False
+  )
 
 
 def get_user_db_path(username):
@@ -235,8 +252,14 @@ if not st.session_state.auth_user:
         if entered_hash == user_data["password_hash"]:
           is_manager = user_data["role"] == "manager"
           is_approved = bool(user_data["is_approved"])
+          is_frozen = bool(user_data.get("is_frozen", 0))
 
-          if not is_manager and not is_approved:
+          if is_frozen:
+            st.sidebar.error(
+                "🚫 **Account Frozen:** Your operator account has been frozen"
+                " by the Master Admin. Please contact administration."
+            )
+          elif not is_manager and not is_approved:
             st.sidebar.error(
                 "🚫 Access Pending: Master Admin has not yet authorized your"
                 " account."
@@ -280,15 +303,22 @@ if not st.session_state.auth_user:
 
   st.stop()
   
+  
   # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 current_user_id = st.session_state.auth_user
 fresh_user_data = get_user_credentials(current_user_id)
 
-if not fresh_user_data:
-  st.session_state.auth_user = None
-  st.rerun()
+if not fresh_user_data or fresh_user_data.get("is_frozen", 0) == 1:
+  st.error(
+      "🚫 **Access Revoked / Frozen:** Your account is frozen or no longer"
+      " active."
+  )
+  if st.button("Log Out"):
+    st.session_state.auth_user = None
+    st.rerun()
+  st.stop()
 
 current_role = fresh_user_data.get("role", "collector")
 current_agent_name = fresh_user_data.get("full_name", "Field Agent")
@@ -386,12 +416,12 @@ st.markdown("---")
 
 # Main Application Tabs
 tab_list = [
-    "👥 Client Registration",
+    "👥 Client Registration & Search",
     "📥 Daily/Weekly Transactions & Receipts",
     "📊 Loan Qualification Audit",
 ]
 if current_role == "manager":
-  tab_list.append("⚙️ Collector Access & Edit Control")
+  tab_list.append("⚙️ Collector Access & Security Control")
   tab_list.append("🏢 Master Agency Overview")
 
 tabs = st.tabs(tab_list)
@@ -401,7 +431,7 @@ tab3 = tabs[2]
 tab_access = tabs[3] if current_role == "manager" else None
 tab_overview = tabs[4] if current_role == "manager" else None
 
-# --- TAB 1: CLIENT REGISTRATION ---
+# --- TAB 1: CLIENT REGISTRATION & SEARCH BAR ---
 with tab1:
   st.markdown("### Register New Susu Client (Private Space)")
   df_my_clients = get_my_clients()
@@ -446,14 +476,33 @@ with tab1:
           )
           st.rerun()
 
-  st.markdown("#### Your Registered Clients Directory")
+  st.markdown("---")
+  st.markdown("#### 🔍 Client Search & Directory")
+  search_query = st.text_input(
+      "Search clients by Name, ID, or Location/Market Zone"
+  ).strip()
+
   if df_my_clients.empty:
     st.info(
         "ℹ️ No clients registered in your private space yet. Your records are"
         " completely clean and private to you."
     )
   else:
-    st.dataframe(df_my_clients, use_container_width=True)
+    filtered_clients = df_my_clients.copy()
+    if search_query:
+      mask = (
+          filtered_clients["client_id"]
+          .astype(str)
+          .str.contains(search_query, case=False, na=False)
+          | filtered_clients["full_name"]
+          .astype(str)
+          .str.contains(search_query, case=False, na=False)
+          | filtered_clients["market_zone"]
+          .astype(str)
+          .str.contains(search_query, case=False, na=False)
+      )
+      filtered_clients = filtered_clients[mask]
+    st.dataframe(filtered_clients, use_container_width=True)
 
 # --- TAB 2: TRANSACTIONS & EXPORTS ---
 with tab2:
@@ -673,10 +722,10 @@ with tab3:
 
     st.dataframe(merged_summary, use_container_width=True)
 
-# --- TAB 4: COLLECTOR ACCESS & EDIT CONTROL (MANAGER ONLY) ---
+# --- TAB 4: COLLECTOR ACCESS & SECURITY CONTROL (MANAGER ONLY) ---
 if tab_access:
   with tab_access:
-    st.markdown("### ⚙️ Collector Authorization & Edit Privilege Control")
+    st.markdown("### ⚙️ Collector Authorization, Edit Privileges & Account Freeze")
     users_dict = get_all_users_dict()
     collector_items = [
         (uid, data)
@@ -697,44 +746,82 @@ if tab_access:
 
       cur_app = users_dict[target_collector].get("is_approved", 0)
       cur_edit = users_dict[target_collector].get("allow_edit", 0)
+      cur_frozen = users_dict[target_collector].get("is_frozen", 0)
 
       with col_ctrl2:
+        status_text = (
+            "❄️ Frozen"
+            if cur_frozen
+            else ("🟢 Authorized" if cur_app else "🔴 Locked")
+        )
         st.markdown(
-            f"**Status:** {'🟢 Authorized' if cur_app else '🔴 Locked'}\n\n**Edit"
-            f" Permission:** {'🔓 Allowed' if cur_edit else '🔒 Restricted'}"
+            f"**Status:** {status_text}\n\n**Edit Rights:**"
+            f" {'🔓 Allowed' if cur_edit else '🔒 Restricted'}"
         )
 
-      action_col1, action_col2, action_col3 = st.columns(3)
+      action_col1, action_col2, action_col3, action_col4 = st.columns(4)
       with action_col1:
         if st.button("✅ Authorize Agent", use_container_width=True):
           update_user_privileges(
-              target_collector, is_approved=True, allow_edit=cur_edit
+              target_collector,
+              is_approved=True,
+              allow_edit=cur_edit,
+              is_frozen=cur_frozen,
           )
           st.success(f"Agent {target_collector} authorized!")
           st.rerun()
       with action_col2:
         if st.button("🔓 Grant Edit Access", use_container_width=True):
           update_user_privileges(
-              target_collector, is_approved=cur_app, allow_edit=True
+              target_collector,
+              is_approved=cur_app,
+              allow_edit=True,
+              is_frozen=cur_frozen,
           )
           st.success(f"Edit privileges granted to {target_collector}!")
           st.rerun()
       with action_col3:
         if st.button("🔒 Revoke Edit Access", use_container_width=True):
           update_user_privileges(
-              target_collector, is_approved=cur_app, allow_edit=False
+              target_collector,
+              is_approved=cur_app,
+              allow_edit=False,
+              is_frozen=cur_frozen,
           )
           st.warning(f"Edit privileges revoked for {target_collector}.")
           st.rerun()
+      with action_col4:
+        if cur_frozen:
+          if st.button("☀️ Unfreeze Account", use_container_width=True):
+            update_user_privileges(
+                target_collector,
+                is_approved=cur_app,
+                allow_edit=cur_edit,
+                is_frozen=False,
+            )
+            st.success(f"Account {target_collector} unfrozen!")
+            st.rerun()
+        else:
+          if st.button("❄️ Freeze Account", use_container_width=True):
+            update_user_privileges(
+                target_collector,
+                is_approved=cur_app,
+                allow_edit=cur_edit,
+                is_frozen=True,
+            )
+            st.error(f"Account {target_collector} frozen!")
+            st.rerun()
 
-      st.markdown("#### Full Roster Authorization & Privilege Status")
+      st.markdown("#### Full Roster Security & Privilege Status")
       status_df = pd.DataFrame([
           {
               "Username": uid,
               "Full Name": data.get("full_name"),
               "Zone": data.get("zone"),
-              "Login Status": (
-                  "Authorized" if data.get("is_approved") else "Locked"
+              "Account Status": (
+                  "❄️ Frozen"
+                  if data.get("is_frozen")
+                  else ("Authorized" if data.get("is_approved") else "Locked")
               ),
               "Edit Rights": (
                   "Allowed" if data.get("allow_edit") else "Restricted"
@@ -796,3 +883,4 @@ if tab_overview:
       st.dataframe(master_clients_df, use_container_width=True)
     else:
       st.info("ℹ️ No transactions recorded across agent workspaces yet.")
+  
