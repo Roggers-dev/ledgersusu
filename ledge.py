@@ -448,7 +448,7 @@ if not st.session_state.auth_user:
     if auth_mode == "Log In":
       st.sidebar.subheader("Operator Login")
       login_user = st.sidebar.text_input(
-          "Username", placeholder="Eg.we4vb43@"
+          "Username", placeholder="Enter your signed up username"
       ).strip()
       login_pass = st.sidebar.text_input(
           "Password", type="password", placeholder="Enter your secure password"
