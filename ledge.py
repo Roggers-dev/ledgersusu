@@ -1,8 +1,11 @@
 from datetime import datetime
+from email.message import EmailMessage
 import hashlib
 import io
 import os
+import smtplib
 import sqlite3
+import urllib.parse
 import pandas as pd
 import streamlit as st
 
@@ -125,8 +128,9 @@ def update_user_privileges(username, is_approved, allow_edit, is_frozen):
       ),
   )
   auth_conn.commit()
-  
-  # Ensure default Master Admin exists on first run
+
+
+# Ensure default Master Admin exists on first run
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
 if not get_user_credentials("rog3rs_admin"):
   register_user(
@@ -301,7 +305,6 @@ if not st.session_state.auth_user:
 
   st.stop()
   
-  
   # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
@@ -415,7 +418,8 @@ st.markdown("---")
 # Main Application Tabs
 tab_list = [
     "👥 Client Registration & Search",
-    "📥 Daily/Weekly Transactions & Receipts",
+    "🧭 Route Planner",
+    "📥 Daily Transactions & EOD Cash",
     "📊 Loan Qualification Audit",
 ]
 if current_role == "manager":
@@ -424,10 +428,11 @@ if current_role == "manager":
 
 tabs = st.tabs(tab_list)
 tab1 = tabs[0]
-tab2 = tabs[1]
-tab3 = tabs[2]
-tab_access = tabs[3] if current_role == "manager" else None
-tab_overview = tabs[4] if current_role == "manager" else None
+tab_route = tabs[1]
+tab2 = tabs[2]
+tab3 = tabs[3]
+tab_access = tabs[4] if current_role == "manager" else None
+tab_overview = tabs[5] if current_role == "manager" else None
 
 # --- TAB 1: CLIENT REGISTRATION & SEARCH BAR ---
 with tab1:
@@ -522,9 +527,53 @@ with tab1:
 
     st.dataframe(filtered_clients, use_container_width=True)
 
-# --- TAB 2: TRANSACTIONS & EXPORTS ---
+# --- TAB 2: COLLECTOR ROUTE PLANNER ---
+with tab_route:
+  st.markdown("### 🧭 Daily Route & Collection Planner")
+  st.caption(
+      "Organize your client visitation rounds grouped by Market Zone for today's"
+      " collection."
+  )
+
+  df_my_clients = get_my_clients()
+  if df_my_clients.empty:
+    st.info("ℹ️ Register clients to view your daily collection route.")
+  else:
+    zones = df_my_clients["market_zone"].unique().tolist()
+    selected_zone_filter = st.selectbox(
+        "Filter Collection Route by Market Zone", options=["All Zones"] + zones
+    )
+
+    route_df = df_my_clients.copy()
+    if selected_zone_filter != "All Zones":
+      route_df = route_df[route_df["market_zone"] == selected_zone_filter]
+
+    route_df.rename(
+        columns={
+            "client_id": "Client Account ID",
+            "full_name": "Client Name",
+            "phone_number": "Contact Number",
+            "market_zone": "Market Zone",
+        },
+        inplace=True,
+    )
+    st.markdown(
+        f"**Scheduled Stops for Route:** {len(route_df)} Client(s) in"
+        f" **{selected_zone_filter}**"
+    )
+    st.dataframe(
+        route_df[[
+            "Client Account ID",
+            "Client Name",
+            "Contact Number",
+            "Market Zone",
+        ]],
+        use_container_width=True,
+    )
+    
+    # --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
 with tab2:
-  st.markdown("### Record Contributions & Protected Exports")
+  st.markdown("### Record Contributions & End-of-Day (EOD) Reconciliation")
   df_my_clients = get_my_clients()
 
   if df_my_clients.empty:
@@ -547,6 +596,9 @@ with tab2:
             "Amount Deposited (GHS)", min_value=0.0, format="%.2f"
         )
         notes = st.text_input("Remarks / Notes", value="Regular Deposit")
+        client_email = st.text_input(
+            "Client Email (Optional for Email Receipt)"
+        ).strip()
 
       submit_tx = st.form_submit_button(
           "Post Contribution & Lock Entry", use_container_width=True
@@ -556,9 +608,11 @@ with tab2:
         if amount <= 0:
           st.error("❌ Amount must be greater than zero.")
         else:
-          client_name = df_my_clients.loc[
-              df_my_clients["client_id"] == selected_client_id, "full_name"
-          ].values[0]
+          client_row = df_my_clients.loc[
+              df_my_clients["client_id"] == selected_client_id
+          ].iloc[0]
+          client_name = client_row["full_name"]
+          client_phone = client_row.get("phone_number", "")
           tx_id = f"TXN-{datetime.now().strftime('%Y%m%d%H%M%S')}"
           tx_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -571,11 +625,14 @@ with tab2:
               amount,
               notes,
           )
+
           st.session_state.last_receipt = {
               "Transaction ID": tx_id,
               "Timestamp": tx_timestamp,
               "Client ID": selected_client_id,
               "Client Name": client_name,
+              "Client Phone": client_phone,
+              "Client Email": client_email,
               "Collector ID": current_user_id,
               "Frequency": frequency,
               "Amount (GHS)": amount,
@@ -589,7 +646,22 @@ with tab2:
   if st.session_state.last_receipt:
     r = st.session_state.last_receipt
     st.markdown("---")
-    st.markdown("### 🖨️ Official Instant Transaction Receipt")
+    st.markdown("### 🖨️ Official Instant Transaction Receipt & Dispatch")
+
+    receipt_text = (
+        f"🏛️ *SUSUFLOW ENTERPRISE RECEIPT*\n"
+        f"----------------------------------------\n"
+        f"Tx ID: {r['Transaction ID']}\n"
+        f"Date: {r['Timestamp']}\n"
+        f"Client: {r['Client Name']} ({r['Client ID']})\n"
+        f"Type: {r['Frequency']}\n"
+        f"Amount: GHS {r['Amount (GHS)']:,.2f}\n"
+        f"Collector: {r['Collector ID']} ({current_agent_name})\n"
+        f"Remarks: {r['Notes']}\n"
+        f"----------------------------------------\n"
+        f"Status: LOCKED & SECURED"
+    )
+
     st.markdown(
         f"""
         <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px dashed #0e1117; color: #000;">
@@ -610,9 +682,54 @@ with tab2:
         unsafe_allow_html=True,
     )
 
-  st.markdown("#### 📝 Transaction Ledger & Edit Management")
-  df_tx = get_my_transactions()
+    col_w, col_e = st.columns(2)
+    with col_w:
+      wa_encoded_text = urllib.parse.quote(receipt_text)
+      clean_phone = "".join(filter(str.isdigit, str(r["Client Phone"])))
+      wa_url = (
+          f"https://wa.me/{clean_phone}?text={wa_encoded_text}"
+          if clean_phone
+          else f"https://wa.me/?text={wa_encoded_text}"
+      )
+      st.markdown(
+          f'<p style="text-align: center;"><a href="{wa_url}" target="_blank"'
+          ' style="display:inline-block; background-color:#25D366; color:white;'
+          ' padding:10px 20px; border-radius:5px; text-decoration:none;'
+          ' font-weight:bold;">💬 Share Receipt via WhatsApp</a></p>',
+          unsafe_allow_html=True,
+      )
 
+    with col_e:
+      if r["Client Email"]:
+        mailto_link = f"mailto:{r['Client Email']}?subject={urllib.parse.quote('SusuFlow Enterprise Receipt - ' + r['Transaction ID'])}&body={urllib.parse.quote(receipt_text)}"
+        st.markdown(
+            f'<p style="text-align: center;"><a href="{mailto_link}"'
+            ' target="_blank" style="display:inline-block;'
+            ' background-color:#EA4335; color:white; padding:10px 20px;'
+            ' border-radius:5px; text-decoration:none; font-weight:bold;">📧'
+            " Send Receipt via Email</a></p>",
+            unsafe_allow_html=True,
+        )
+      else:
+        st.info("ℹ️ Enter client email during posting to enable email button.")
+
+  # --- EOD CASH RECONCILIATION BOX ---
+  df_tx = get_my_transactions()
+  if not df_tx.empty:
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    df_tx["date_only"] = df_tx["timestamp"].astype(str).str.slice(0, 10)
+    today_tx = df_tx[df_tx["date_only"] == today_str]
+    today_total_cash = today_tx["amount"].sum() if not today_tx.empty else 0.0
+
+    st.markdown("---")
+    st.markdown("### 💰 End-of-Day (EOD) Cash Reconciliation")
+    c1, c2 = st.columns(2)
+    c1.metric(
+        "Total Cash Collected Today", f"GHS {today_total_cash:,.2f}"
+    )
+    c2.metric("Total Transactions Logged Today", f"{len(today_tx)} Entries")
+
+  st.markdown("#### 📝 Transaction Ledger & Edit Management")
   if df_tx.empty:
     st.info("ℹ️ No transactions recorded yet in your private workspace.")
   else:
@@ -696,7 +813,8 @@ with tab2:
         ),
     )
     
-    # --- TAB 3: LOAN QUALIFICATION AUDIT ---
+    
+    # --- TAB 4: LOAN QUALIFICATION AUDIT ---
 with tab3:
   st.markdown("### 💳 Loan Qualification Tracker")
   df_my_clients = get_my_clients()
@@ -765,7 +883,7 @@ with tab3:
 
     st.dataframe(merged_summary, use_container_width=True)
 
-# --- TAB 4: COLLECTOR ACCESS & SECURITY CONTROL (MANAGER ONLY) ---
+# --- TAB 5: COLLECTOR ACCESS & SECURITY CONTROL (MANAGER ONLY) ---
 if tab_access:
   with tab_access:
     st.markdown("### ⚙️ Collector Authorization, Edit Privileges & Account Freeze")
@@ -875,7 +993,7 @@ if tab_access:
       ])
       st.dataframe(status_df, use_container_width=True)
 
-# --- TAB 5: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
+# --- TAB 6: MASTER AGENCY OVERVIEW (MANAGER ONLY) ---
 if tab_overview:
   with tab_overview:
     st.markdown("### 🏢 Executive Master Agency Overview")
