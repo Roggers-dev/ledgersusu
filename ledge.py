@@ -246,25 +246,6 @@ entered_password = st.sidebar.text_input(
 
 login_button = st.sidebar.button("Authorize Access")
     
-    
-"""   #users_dict = get_user_directory()
-       with st.form("multi_login_form"):
-           selected_login_id = st.selectbox(
-               "Select Operator Account",
-               options=list(users_dict.keys()),
-               format_func=lambda x: f"{users_dict[x]['full_name']} ({x})"
-           )
-           pass_in = st.text_input("Operator Security PIN / Password", type="password", placeholder="Default test pass: test")
-           if st.form_submit_button("Unlock Workspace", use_container_width=True):
-               uid, info = authenticate_user(selected_login_id, pass_in)
-               if uid:
-                   st.session_state.auth_user = uid
-                   st.session_state.user_info = info
-                   st.session_state.last_txn = None
-                   st.rerun()
-               else:
-                   st.error("❌ Invalid password for selected operator.")
-       st.stop() """
   
 
 # ==============================================================================
