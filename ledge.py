@@ -42,6 +42,18 @@ def init_auth_db():
             max_clients INTEGER DEFAULT 100
         )
     """)
+  # Global Settings Table for App-Wide Limits
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+  # Set default global client limit if not exists
+  cursor.execute(
+      "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('global_client_limit', '5000')"
+  )
+
   try:
     cursor.execute(
         "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0"
@@ -59,6 +71,25 @@ def init_auth_db():
 
 
 auth_conn = init_auth_db()
+
+
+def get_global_client_limit():
+  cursor = auth_conn.cursor()
+  cursor.execute(
+      "SELECT value FROM app_settings WHERE key = 'global_client_limit'"
+  )
+  row = cursor.fetchone()
+  return int(row[0]) if row else 5000
+
+
+def set_global_client_limit(limit_val):
+  cursor = auth_conn.cursor()
+  cursor.execute(
+      "INSERT OR REPLACE INTO app_settings (key, value) VALUES"
+      " ('global_client_limit', ?)",
+      (str(limit_val),),
+  )
+  auth_conn.commit()
 
 
 def register_user(username, password_hash, full_name, zone, role="collector"):
@@ -142,6 +173,16 @@ def update_user_privileges(
   auth_conn.commit()
 
 
+def admin_reset_password(username, new_password):
+  cursor = auth_conn.cursor()
+  new_hash = hashlib.sha256(new_password.encode()).hexdigest()
+  cursor.execute(
+      "UPDATE users SET password_hash = ? WHERE username = ?",
+      (new_hash, username),
+  )
+  auth_conn.commit()
+
+
 # Ensure default Master Admin exists on first run
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
 if not get_user_credentials("rog3rs_admin"):
@@ -197,6 +238,7 @@ def init_user_db(db_path):
     """)
   conn.commit()
   return conn
+
 
 # ==========================================
 # 3. SUBSCRIPTION PERIOD LOGIC
@@ -319,9 +361,9 @@ if not st.session_state.auth_user:
           st.sidebar.error(f"❌ {msg}")
 
   st.stop()
-
-
-# ==========================================
+  
+  
+  # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 current_user_id = st.session_state.auth_user
@@ -459,12 +501,34 @@ with tab1:
   registered_count = len(df_my_clients)
   max_allowed = user_max_clients
 
+  # Check global agency capacity
+  global_limit = get_global_client_limit()
+  users_dict_check = get_all_users_dict()
+  total_agency_clients_count = 0
+  for uid, data in users_dict_check.items():
+    if data.get("role") == "collector":
+      db_p = get_user_db_path(uid)
+      if os.path.exists(db_p):
+        try:
+          t_conn = sqlite3.connect(db_p)
+          c_cnt_df = pd.read_sql("SELECT COUNT(*) FROM clients", t_conn)
+          t_conn.close()
+          total_agency_clients_count += int(c_cnt_df.iloc[0, 0])
+        except Exception:
+          pass
+
   st.metric(
       "Your Personal Client Quota",
       f"{registered_count} / {max_allowed} Clients Registered",
   )
 
-  if current_role == "collector" and registered_count >= max_allowed:
+  if total_agency_clients_count >= global_limit and current_role == "collector":
+    st.error(
+        "🚫 **Agency Capacity Reached:** The total global client limit"
+        f" ({global_limit}) set by Master Admin has been reached across the"
+        " platform."
+    )
+  elif current_role == "collector" and registered_count >= max_allowed:
     st.error(
         f"🚫 **Quota Reached:** You have reached your individual limit of"
         f" {max_allowed} clients. Please contact Master Admin to upgrade your"
@@ -545,8 +609,8 @@ with tab1:
       filtered_clients = merged_client_view
 
     st.dataframe(filtered_clients, use_container_width=True)
-    
-    # --- TAB 2: COLLECTOR ROUTE PLANNER ---
+
+# --- TAB 2: COLLECTOR ROUTE PLANNER ---
 with tab_route:
   st.markdown("### 🧭 Daily Route & Collection Planner")
   st.caption(
@@ -589,8 +653,9 @@ with tab_route:
         ]],
         use_container_width=True,
     )
-
-# --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
+    
+    
+    # --- TAB 3: TRANSACTIONS, EOD CASH, WHATSAPP & EMAIL RECEIPTS ---
 with tab2:
   st.markdown("### Record Contributions & End-of-Day (EOD) Reconciliation")
   df_my_clients = get_my_clients()
@@ -731,8 +796,8 @@ with tab2:
         )
       else:
         st.info("ℹ️ Enter client email during posting to enable email button.")
-
-  # --- EOD CASH RECONCILIATION BOX ---
+        
+        # --- EOD CASH RECONCILIATION BOX ---
   df_tx = get_my_transactions()
   if not df_tx.empty:
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -831,9 +896,8 @@ with tab2:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
-    
-    
-    # --- TAB 4: LOAN QUALIFICATION AUDIT ---
+
+# --- TAB 4: LOAN QUALIFICATION AUDIT ---
 with tab3:
   st.markdown("### 💳 Loan Qualification Tracker")
   df_my_clients = get_my_clients()
@@ -909,6 +973,28 @@ if tab_access:
         "### ⚙️ Collector Authorization, Edit Privileges, Quota & Account"
         " Freeze"
     )
+
+    # --- GLOBAL AGENCY APP-WIDE CLIENT LIMIT SETTING ---
+    st.markdown("#### 🌐 Global Agency-Wide Client Capacity")
+    current_global_limit = get_global_client_limit()
+    with st.form("global_limit_form"):
+      new_global_limit = st.number_input(
+          "Set Total App-Wide Client Limit (All Collectors Combined)",
+          min_value=100,
+          max_value=100000,
+          value=int(current_global_limit),
+      )
+      update_global_btn = st.form_submit_button(
+          "Update Global Agency Client Limit"
+      )
+      if update_global_btn:
+        set_global_client_limit(new_global_limit)
+        st.success(
+            f"✅ Global agency client limit updated to {new_global_limit}!"
+        )
+        st.rerun()
+
+    st.markdown("---")
     users_dict = get_all_users_dict()
     collector_items = [
         (uid, data)
@@ -944,30 +1030,48 @@ if tab_access:
             f" Quota:** {cur_quota}"
         )
 
-      st.markdown("#### 💳 Adjust Client Quota (Payment Condition)")
-      with st.form("adjust_quota_form"):
-        new_quota_val = st.number_input(
-            "Set Maximum Client Quota Limit for Agent",
-            min_value=1,
-            max_value=1000,
-            value=int(cur_quota),
-        )
-        update_quota_btn = st.form_submit_button(
-            "Update Quota Limit (Paid Tier)"
-        )
-        if update_quota_btn:
-          update_user_privileges(
-              target_collector,
-              is_approved=cur_app,
-              allow_edit=cur_edit,
-              is_frozen=cur_frozen,
-              max_clients=new_quota_val,
+      st.markdown("#### 💳 Adjust Individual Collector Quota & Password Reset")
+      col_q_form, col_pwd_form = st.columns(2)
+
+      with col_q_form:
+        with st.form("adjust_quota_form"):
+          new_quota_val = st.number_input(
+              "Set Max Quota Limit for Agent",
+              min_value=1,
+              max_value=1000,
+              value=int(cur_quota),
           )
-          st.success(
-              f"✅ Quota limit for {target_collector} successfully updated to"
-              f" {new_quota_val} clients!"
+          update_quota_btn = st.form_submit_button(
+              "Update Quota (Paid Tier)"
           )
-          st.rerun()
+          if update_quota_btn:
+            update_user_privileges(
+                target_collector,
+                is_approved=cur_app,
+                allow_edit=cur_edit,
+                is_frozen=cur_frozen,
+                max_clients=new_quota_val,
+            )
+            st.success(
+                f"✅ Quota for {target_collector} updated to {new_quota_val}!"
+            )
+            st.rerun()
+
+      with col_pwd_form:
+        with st.form("admin_reset_pwd_form"):
+          new_temp_pwd = st.text_input(
+              "Set Temporary Password for User", type="password"
+          )
+          reset_pwd_btn = st.form_submit_button("Reset User Password")
+          if reset_pwd_btn:
+            if not new_temp_pwd:
+              st.error("❌ Enter a valid temporary password.")
+            else:
+              admin_reset_password(target_collector, new_temp_pwd)
+              st.success(
+                  f"✅ Password for {target_collector} successfully reset!"
+              )
+              st.rerun()
 
       st.markdown("---")
       action_col1, action_col2, action_col3, action_col4 = st.columns(4)
