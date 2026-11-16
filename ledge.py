@@ -113,7 +113,7 @@ def update_user_privileges(username, is_approved, allow_edit):
   auth_conn.commit()
 
 
-# Ensure default Master Admin exists on first run (Username: rog3rs_admin, Password: admin123)
+# Ensure default Master Admin exists on first run
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
 if not get_user_credentials("rog3rs_admin"):
   register_user(
@@ -279,13 +279,16 @@ if not st.session_state.auth_user:
           st.sidebar.error(f"❌ {msg}")
 
   st.stop()
-
-
-# ==========================================
+  
+  # ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 current_user_id = st.session_state.auth_user
 fresh_user_data = get_user_credentials(current_user_id)
+
+if not fresh_user_data:
+  st.session_state.auth_user = None
+  st.rerun()
 
 current_role = fresh_user_data.get("role", "collector")
 current_agent_name = fresh_user_data.get("full_name", "Field Agent")
@@ -298,7 +301,7 @@ user_db_path = get_user_db_path(current_user_id)
 agent_db_conn = init_user_db(user_db_path)
 
 
-# --- DATABASE HELPER FUNCTIONS (DEFINED BEFORE TABS) ---
+# --- DATABASE HELPER FUNCTIONS ---
 def get_my_clients():
   return pd.read_sql("SELECT * FROM clients", agent_db_conn)
 
@@ -349,8 +352,9 @@ def save_my_transaction(
       ),
   )
   agent_db_conn.commit()
-  
-  def update_my_transaction(tx_id, frequency, amount, notes):
+
+
+def update_my_transaction(tx_id, frequency, amount, notes):
   cursor = agent_db_conn.cursor()
   cursor.execute(
       """
