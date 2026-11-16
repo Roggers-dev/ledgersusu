@@ -18,13 +18,16 @@ st.set_page_config(
 
 
 # ==========================================
-# 2. ISOLATED DATABASE MANAGEMENT & EDIT LOCKS
+# 2. STRICTLY ISOLATED DATABASE PARTITIONING
 # ==========================================
 def get_user_db_path(username):
+  """Ensures completely isolated database storage per user account."""
+  # Create a secure directory for databases if it doesn't exist
+  os.makedirs("secure_data", exist_ok=True)
   if username == "rog3rs_admin":
-    return "master_agency.db"
+    return os.path.join("secure_data", "master_agency.db")
   else:
-    return f"db_{username}.db"
+    return os.path.join("secure_data", f"db_{username}.db")
 
 
 def init_db(db_path):
@@ -60,7 +63,10 @@ def init_db(db_path):
 
 
 def init_master_access_db():
-  conn = sqlite3.connect("master_access.db", check_same_thread=False)
+  os.makedirs("secure_data", exist_ok=True)
+  conn = sqlite3.connect(
+      os.path.join("secure_data", "master_access.db"), check_same_thread=False
+  )
   cursor = conn.cursor()
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS collector_access (
@@ -69,13 +75,12 @@ def init_master_access_db():
             allow_edit INTEGER DEFAULT 0
         )
     """)
-  # Safe migration: Add allow_edit column if updating an older database file
   try:
     cursor.execute(
         "ALTER TABLE collector_access ADD COLUMN allow_edit INTEGER DEFAULT 0"
     )
   except sqlite3.OperationalError:
-    pass  # Column already exists
+    pass
   conn.commit()
   return conn
 
@@ -196,7 +201,7 @@ if not is_active:
 # ==========================================
 if not st.session_state.auth_user:
   st.sidebar.markdown("### 🔐 SusuFlow Enterprise Login")
-  st.sidebar.caption("Secure Encrypted Workspace & Edit-Lock Protection")
+  st.sidebar.caption("Strictly Isolated Workspaces & Privacy Protection")
 
   selected_user_id = st.sidebar.selectbox(
       "Select Operator Account",
@@ -230,9 +235,9 @@ if not st.session_state.auth_user:
       st.sidebar.error("❌ Invalid password for selected operator.")
 
   st.stop()
-  
-  
-  # ==========================================
+
+
+# ==========================================
 # 7. MAIN APP DASHBOARD & ISOLATED DATA HANDLING
 # ==========================================
 user_info = st.session_state.get("user_info", {})
@@ -249,8 +254,8 @@ current_user_id = st.session_state.auth_user
 _, user_allow_edit = get_collector_meta(current_user_id)
 if current_role == "manager":
   user_allow_edit = 1
-
-# Connect to user's isolated database
+  
+  # Connect strictly to THIS specific authenticated user's private database file
 user_db_path = get_user_db_path(current_user_id)
 agent_db_conn = init_db(user_db_path)
 
@@ -334,9 +339,7 @@ if st.sidebar.button("Log Out Session", use_container_width=True):
   st.rerun()
 
 st.title("💼 SusuFlow Enterprise Command Centre")
-st.markdown(
-    f"*Encrypted Records, Protected Excel Exports & Admin-Gated Editing*"
-)
+st.markdown(f"*Strictly Isolated Private Collector Workspace*")
 st.markdown("---")
 
 # Main Application Tabs
