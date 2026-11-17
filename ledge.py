@@ -52,7 +52,7 @@ st.markdown(
 
 
 # ==========================================
-# 2. PERSISTENT DATABASE INITIALIZATION
+# 2. ROBUST DATABASE HELPER FUNCTIONS
 # ==========================================
 def get_auth_connection():
   os.makedirs("secure_data", exist_ok=True)
@@ -143,7 +143,7 @@ def init_user_db(db_path):
   return conn
 
 
-# Ensure default test user exists securely
+# Ensure default test user exists securely upon startup
 if not get_user_credentials("collector1"):
   register_user(
       "collector1",
@@ -581,5 +581,3 @@ st.caption(
     "SusuFlow Enterprise • Developer: rog3rs • 📞 0542470810 • 📧"
     " koffieroggers@gmail.com • Persistent Local Storage Platform"
 )
-
-
