@@ -52,9 +52,9 @@ st.markdown(
 
 
 # ==========================================
-# 2. ROBUST DATABASE HELPER FUNCTIONS
+# 2. BULLETPROOF DATABASE & AUTH FUNCTIONS
 # ==========================================
-def get_auth_connection():
+def get_auth_db():
   os.makedirs("secure_data", exist_ok=True)
   conn = sqlite3.connect(
       os.path.join("secure_data", "users_registry.db"), check_same_thread=False
@@ -72,9 +72,9 @@ def get_auth_connection():
 
 
 def register_user(username, password_hash, identifier):
-  conn = get_auth_connection()
-  cursor = conn.cursor()
   clean_username = username.strip().lower()
+  conn = get_auth_db()
+  cursor = conn.cursor()
   try:
     cursor.execute(
         """
@@ -92,9 +92,9 @@ def register_user(username, password_hash, identifier):
 
 
 def get_user_credentials(username):
-  conn = get_auth_connection()
-  cursor = conn.cursor()
   clean_username = username.strip().lower()
+  conn = get_auth_db()
+  cursor = conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, identifier FROM users WHERE username ="
       " ?",
@@ -113,7 +113,8 @@ def get_user_db_path(username):
   return os.path.join("secure_data", f"db_{clean_username}.db")
 
 
-def init_user_db(db_path):
+def get_client_records(username):
+  db_path = get_user_db_path(username)
   conn = sqlite3.connect(db_path, check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("""
@@ -126,6 +127,48 @@ def init_user_db(db_path):
             registration_date TEXT
         )
     """)
+  conn.commit()
+  df = pd.read_sql("SELECT * FROM clients", conn)
+  conn.close()
+  return df
+
+
+def save_client_record(username, acc_id, full_name, phone_number, location, occupation):
+  db_path = get_user_db_path(username)
+  conn = sqlite3.connect(db_path, check_same_thread=False)
+  cursor = conn.cursor()
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS clients (
+            acc_id TEXT PRIMARY KEY,
+            full_name TEXT,
+            phone_number TEXT,
+            location TEXT,
+            occupation TEXT,
+            registration_date TEXT
+        )
+    """)
+  cursor.execute(
+      """
+        INSERT OR REPLACE INTO clients (acc_id, full_name, phone_number, location, occupation, registration_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """,
+      (
+          acc_id,
+          full_name,
+          phone_number,
+          location,
+          occupation,
+          datetime.now().strftime("%Y-%m-%d"),
+      ),
+  )
+  conn.commit()
+  conn.close()
+
+
+def get_transaction_records(username):
+  db_path = get_user_db_path(username)
+  conn = sqlite3.connect(db_path, check_same_thread=False)
+  cursor = conn.cursor()
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             transaction_id TEXT PRIMARY KEY,
@@ -140,10 +183,61 @@ def init_user_db(db_path):
         )
     """)
   conn.commit()
-  return conn
+  df = pd.read_sql("SELECT * FROM transactions ORDER BY timestamp DESC", conn)
+  conn.close()
+  return df
 
 
-# Ensure default test user exists securely upon startup
+def save_transaction_record(
+    username,
+    tx_id,
+    timestamp,
+    acc_id,
+    client_name,
+    phone_number,
+    tx_type,
+    location,
+    amount,
+    notes,
+):
+  db_path = get_user_db_path(username)
+  conn = sqlite3.connect(db_path, check_same_thread=False)
+  cursor = conn.cursor()
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            transaction_id TEXT PRIMARY KEY,
+            timestamp TEXT,
+            acc_id TEXT,
+            client_name TEXT,
+            phone_number TEXT,
+            transaction_type TEXT,
+            location TEXT,
+            amount REAL,
+            notes TEXT
+        )
+    """)
+  cursor.execute(
+      """
+        INSERT INTO transactions (transaction_id, timestamp, acc_id, client_name, phone_number, transaction_type, location, amount, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+      (
+          tx_id,
+          timestamp,
+          acc_id,
+          client_name,
+          phone_number,
+          tx_type,
+          location,
+          amount,
+          notes,
+      ),
+  )
+  conn.commit()
+  conn.close()
+
+
+# Ensure default test user exists safely upon startup
 if not get_user_credentials("collector1"):
   register_user(
       "collector1",
@@ -248,69 +342,6 @@ if not st.session_state.auth_user:
 # ==========================================
 current_user_id = st.session_state.auth_user
 user_db_path = get_user_db_path(current_user_id)
-agent_db_conn = init_user_db(user_db_path)
-
-
-def get_my_clients():
-  return pd.read_sql("SELECT * FROM clients", agent_db_conn)
-
-
-def save_client(acc_id, full_name, phone_number, location, occupation):
-  cursor = agent_db_conn.cursor()
-  cursor.execute(
-      """
-        INSERT OR REPLACE INTO clients (acc_id, full_name, phone_number, location, occupation, registration_date)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """,
-      (
-          acc_id,
-          full_name,
-          phone_number,
-          location,
-          occupation,
-          datetime.now().strftime("%Y-%m-%d"),
-      ),
-  )
-  agent_db_conn.commit()
-
-
-def get_my_transactions():
-  return pd.read_sql(
-      "SELECT * FROM transactions ORDER BY timestamp DESC", agent_db_conn
-  )
-
-
-def save_transaction(
-    tx_id,
-    timestamp,
-    acc_id,
-    client_name,
-    phone_number,
-    tx_type,
-    location,
-    amount,
-    notes,
-):
-  cursor = agent_db_conn.cursor()
-  cursor.execute(
-      """
-        INSERT INTO transactions (transaction_id, timestamp, acc_id, client_name, phone_number, transaction_type, location, amount, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-      (
-          tx_id,
-          timestamp,
-          acc_id,
-          client_name,
-          phone_number,
-          tx_type,
-          location,
-          amount,
-          notes,
-      ),
-  )
-  agent_db_conn.commit()
-
 
 # Sidebar Workspace Info & Active DB Diagnostics
 st.sidebar.markdown(f"### 👤 Collector: {current_user_id}")
@@ -380,7 +411,14 @@ with tab1:
             "❌ Please provide ACC ID, Full Name, and Phone Number."
         )
       else:
-        save_client(acc_id, full_name, phone_number, location, occupation)
+        save_client_record(
+            current_user_id,
+            acc_id,
+            full_name,
+            phone_number,
+            location,
+            occupation,
+        )
         st.success(
             f"✅ Client **{full_name}** ({acc_id}) successfully registered and"
             " saved permanently!"
@@ -389,7 +427,7 @@ with tab1:
 
   st.markdown("---")
   st.markdown("#### 📋 Registered Clients Directory (Saved on Disk)")
-  df_clients = get_my_clients()
+  df_clients = get_client_records(current_user_id)
   if df_clients.empty:
     st.info(
         "ℹ️ No clients registered yet. Your saved records remain secure in"
@@ -401,7 +439,7 @@ with tab1:
 # --- TAB 2: TRANSACTION RECORDING & RECEIPTS ---
 with tab2:
   st.markdown("### Record Transaction & Generate Neat Receipt")
-  df_clients = get_my_clients()
+  df_clients = get_client_records(current_user_id)
 
   if df_clients.empty:
     st.warning("⚠️ Please register a client in Tab 1 first.")
@@ -443,7 +481,8 @@ with tab2:
           tx_id = f"TXN-{datetime.now().strftime('%Y%m%d%H%M%S')}"
           tx_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-          save_transaction(
+          save_transaction_record(
+              current_user_id,
               tx_id,
               tx_time,
               selected_acc_id,
@@ -532,8 +571,8 @@ with tab3:
       "Automatically computes total deposits made by each individual client."
   )
 
-  df_clients = get_my_clients()
-  df_tx = get_my_transactions()
+  df_clients = get_client_records(current_user_id)
+  df_tx = get_transaction_records(current_user_id)
 
   if df_clients.empty:
     st.info("ℹ️ No clients registered yet.")
