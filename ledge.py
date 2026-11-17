@@ -96,7 +96,7 @@ def register_user(username, password_hash, identifier, role="collector"):
 
 def get_user_credentials(username):
   clean_username = username.strip().lower()
-  conn = get_auth_db()
+  conn = get_auth_db()  # Ensures table is created every time
   cursor = conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, identifier, role FROM users WHERE"
@@ -537,7 +537,7 @@ with tab2:
               c_match["phone_number"],
               tx_type,
               tx_loc,
-              amount,  # Correctly passing dynamic input amount
+              amount,
               notes,
           )
 
