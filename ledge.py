@@ -47,6 +47,18 @@ st.markdown(
         box-shadow: 0 10px 25px rgba(0,0,0,0.2);
         margin-bottom: 25px;
     }
+    .security-stamp {
+        border: 3px dashed #b71c1c;
+        color: #b71c1c;
+        padding: 12px;
+        text-align: center;
+        font-weight: bold;
+        font-size: 1em;
+        border-radius: 8px;
+        background-color: rgba(183, 28, 28, 0.03);
+        margin-top: 15px;
+        letter-spacing: 1px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -66,9 +78,22 @@ def get_auth_db():
             username TEXT PRIMARY KEY,
             password_hash TEXT,
             identifier TEXT,
-            role TEXT DEFAULT 'collector'
+            role TEXT DEFAULT 'collector',
+            max_clients INTEGER DEFAULT 50,
+            can_edit INTEGER DEFAULT 0
         )
     """)
+  # Ensure columns exist for older DB instances
+  try:
+    cursor.execute(
+        "ALTER TABLE users ADD COLUMN max_clients INTEGER DEFAULT 50"
+    )
+  except sqlite3.OperationalError:
+    pass
+  try:
+    cursor.execute("ALTER TABLE users ADD COLUMN can_edit INTEGER DEFAULT 0")
+  except sqlite3.OperationalError:
+    pass
   conn.commit()
   return conn
 
@@ -81,47 +106,59 @@ def init_system_registry():
   if count == 0:
     cursor.execute(
         """
-            INSERT OR IGNORE INTO users (username, password_hash, identifier, role)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO users (username, password_hash, identifier, role, max_clients, can_edit)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             "collector1",
             hashlib.sha256("password123".encode()).hexdigest(),
             "0542470810",
             "collector",
+            50,
+            0,
         ),
     )
     cursor.execute(
         """
-            INSERT OR IGNORE INTO users (username, password_hash, identifier, role)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO users (username, password_hash, identifier, role, max_clients, can_edit)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             "admin",
             hashlib.sha256("admin123".encode()).hexdigest(),
             "koffieroggers@gmail.com",
             "manager",
+            500,
+            1,
         ),
     )
     conn.commit()
   conn.close()
 
 
-# Initialize system registry and default users immediately on boot
 init_system_registry()
 
 
 def register_user(username, password_hash, identifier, role="collector"):
+  if not username:
+    return False, "Username cannot be empty."
   clean_username = username.strip().lower()
   conn = get_auth_db()
   cursor = conn.cursor()
   try:
     cursor.execute(
         """
-            INSERT INTO users (username, password_hash, identifier, role)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (username, password_hash, identifier, role, max_clients, can_edit)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (clean_username, password_hash, identifier.strip().lower(), role),
+        (
+            clean_username,
+            password_hash,
+            identifier.strip().lower(),
+            role,
+            50,
+            0,
+        ),
     )
     conn.commit()
     conn.close()
@@ -132,14 +169,14 @@ def register_user(username, password_hash, identifier, role="collector"):
 
 
 def get_user_credentials(username):
-  if not username or not isinstance(username, str):
+  if not username or not isinstance(username, str) or not username.strip():
     return None
   clean_username = username.strip().lower()
   conn = get_auth_db()
   cursor = conn.cursor()
   cursor.execute(
-      "SELECT username, password_hash, identifier, role FROM users WHERE"
-      " username = ?",
+      "SELECT username, password_hash, identifier, role, max_clients,"
+      " can_edit FROM users WHERE username = ?",
       (clean_username,),
   )
   row = cursor.fetchone()
@@ -150,8 +187,50 @@ def get_user_credentials(username):
         "password_hash": row[1],
         "identifier": row[2],
         "role": row[3],
+        "max_clients": row[4],
+        "can_edit": row[5],
     }
   return None
+
+
+def get_all_users():
+  conn = get_auth_db()
+  df = pd.read_sql("SELECT username, identifier, role, max_clients, can_edit FROM users", conn)
+  conn.close()
+  return df
+
+
+def update_user_governance(username, max_clients, can_edit):
+  conn = get_auth_db()
+  cursor = conn.cursor()
+  cursor.execute(
+      "UPDATE users SET max_clients = ?, can_edit = ? WHERE username = ?",
+      (max_clients, can_edit, username),
+  )
+  conn.commit()
+  conn.close()
+
+
+def reset_user_password(username, identifier, new_password_hash):
+  clean_username = username.strip().lower()
+  clean_identifier = identifier.strip().lower()
+  conn = get_auth_db()
+  cursor = conn.cursor()
+  cursor.execute(
+      "SELECT username FROM users WHERE username = ? AND identifier = ?",
+      (clean_username, clean_identifier),
+  )
+  row = cursor.fetchone()
+  if row:
+    cursor.execute(
+        "UPDATE users SET password_hash = ? WHERE username = ?",
+        (new_password_hash, clean_username),
+    )
+    conn.commit()
+    conn.close()
+    return True, "Password successfully reset!"
+  conn.close()
+  return False, "Username and Phone/Email identifier did not match records."
 
 
 def get_user_db_path(username):
@@ -213,6 +292,20 @@ def save_client_record(
     username, acc_id, full_name, phone_number, location, occupation
 ):
   init_user_tables(username)
+  creds = get_user_credentials(username)
+  df_existing = get_client_records(username)
+  max_limit = creds["max_clients"] if creds else 50
+
+  if (
+      len(df_existing) >= max_limit
+      and acc_id not in df_existing["acc_id"].values
+  ):
+    return (
+        False,
+        f"❌ Quota exceeded! Your account limit is {max_limit} registered"
+        " clients. Contact Admin to expand capacity.",
+    )
+
   conn = sqlite3.connect(get_user_db_path(username), check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute(
@@ -231,6 +324,7 @@ def save_client_record(
   )
   conn.commit()
   conn.close()
+  return True, f"Client **{full_name}** ({acc_id}) successfully registered!"
 
 
 def get_transaction_records(username):
@@ -318,7 +412,7 @@ if "last_receipt" not in st.session_state:
 
 
 # ==========================================
-# 4. AUTHENTICATION (LOGIN & SIGN UP)
+# 4. AUTHENTICATION (LOGIN, SIGN UP & RECOVERY)
 # ==========================================
 if not st.session_state.auth_user:
   col_landing, col_auth = st.columns([1.2, 1])
@@ -328,12 +422,12 @@ if not st.session_state.auth_user:
         """
         <div class="landing-banner">
             <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ SusuFlow Enterprise</h1>
-            <p style="font-size: 1.1em; color: #d0d7de;">Secure micro-finance platform with 24-hour edit lockout, admin override audit trails, and protected exports.</p>
+            <p style="font-size: 1.1em; color: #d0d7de;">Secure micro-finance platform with full admin governance, quotas, anti-forgery stamps, and account recovery.</p>
             <hr style="border-color: rgba(255,255,255,0.2);">
             <ul style="list-style-type: none; padding-left: 0; line-height: 2.2em; font-size: 1.05em;">
-                <li>🔒 <b>24-Hour Edit Protection:</b> Records lock automatically after 24 hours.</li>
-                <li>🛡️ <b>Admin Privileges:</b> Critical overrides require admin authorization & reasons.</li>
-                <li>📊 <b>Protected Excel Reports:</b> Data exports with worksheet protection.</li>
+                <li>🔒 <b>Automated 24hr Lock:</b> Strict record protection & admin overrides.</li>
+                <li>🛡️ <b>Anti-Forgery Stamps:</b> Cryptographically hashed digital receipt stamps.</li>
+                <li>📊 <b>Protected Excel & PDF Exports:</b> Encrypted worksheet reports.</li>
             </ul>
         </div>
         """,
@@ -343,7 +437,7 @@ if not st.session_state.auth_user:
   with col_auth:
     st.sidebar.markdown("### 🔐 Portal Authentication")
     auth_mode = st.sidebar.radio(
-        "Select Action", ["Log In", "Sign Up (New Account)"]
+        "Select Action", ["Log In", "Sign Up", "Forgot Password / Recovery"]
     )
 
     if auth_mode == "Log In":
@@ -366,12 +460,12 @@ if not st.session_state.auth_user:
           else:
             st.sidebar.error("❌ Username not found.")
 
-    else:
-      st.sidebar.subheader("📝 Sign Up")
+    elif auth_mode == "Sign Up":
+      st.sidebar.subheader("📝 Operator Sign Up")
       reg_user = st.sidebar.text_input("Choose Username").strip().lower()
       reg_pass = st.sidebar.text_input("Choose Password", type="password")
       reg_identifier = st.sidebar.text_input(
-          "Phone Number or Email"
+          "Phone Number or Gmail"
       ).strip()
       reg_role = st.sidebar.selectbox(
           "Account Role", ["collector", "manager"]
@@ -380,7 +474,7 @@ if not st.session_state.auth_user:
       if st.sidebar.button("Register & Login", use_container_width=True):
         if not reg_user or not reg_pass or not reg_identifier:
           st.sidebar.error(
-              "❌ Please fill in Username, Password, and Phone Number/Email."
+              "❌ Please fill in Username, Password, and Phone/Email."
           )
         else:
           pass_hash = hashlib.sha256(reg_pass.encode()).hexdigest()
@@ -390,6 +484,32 @@ if not st.session_state.auth_user:
           if success:
             st.session_state.auth_user = reg_user
             st.rerun()
+          else:
+            st.sidebar.error(f"❌ {msg}")
+
+    else:
+      st.sidebar.subheader("🔄 Account Recovery")
+      rec_user = st.sidebar.text_input("Your Username").strip().lower()
+      rec_identifier = st.sidebar.text_input(
+          "Registered Phone Number or Gmail"
+      ).strip()
+      new_pass = st.sidebar.text_input("New Password", type="password")
+      confirm_pass = st.sidebar.text_input("Confirm New Password", type="password")
+
+      if st.sidebar.button("Reset Password", use_container_width=True):
+        if not rec_user or not rec_identifier or not new_pass:
+          st.sidebar.error("❌ All recovery fields are required.")
+        elif new_pass != confirm_pass:
+          st.sidebar.error("❌ Passwords do not match.")
+        else:
+          new_hash = hashlib.sha256(new_pass.encode()).hexdigest()
+          success, msg = reset_user_password(
+              rec_user, rec_identifier, new_hash
+          )
+          if success:
+            st.sidebar.success(
+                f"✅ {msg} You can now log in with your new password."
+            )
           else:
             st.sidebar.error(f"❌ {msg}")
 
@@ -442,7 +562,7 @@ head_col1, head_col2 = st.columns([3, 1])
 with head_col1:
   st.title("💼 SusuFlow Enterprise Command Centre")
   st.markdown(
-      "*Permanent Storage • 24-Hour Edit Lockout • Admin Audit Governance*"
+      "*Permanent Storage • 24-Hour Edit Lockout • Admin Governance & Stamps*"
   )
 with head_col2:
   st.markdown(
@@ -464,6 +584,14 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # --- TAB 1: CLIENT REGISTRATION ---
 with tab1:
   st.markdown("### Register Client")
+  df_existing_clients = get_client_records(current_user_id)
+  current_count = len(df_existing_clients)
+  max_limit = user_creds["max_clients"] if user_creds else 50
+  st.info(
+      f"📊 **Client Quota Status:** {current_count} / {max_limit} clients"
+      " registered."
+  )
+
   with st.form("client_reg_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -485,7 +613,7 @@ with tab1:
             "❌ Please provide ACC ID, Full Name, and Phone Number."
         )
       else:
-        save_client_record(
+        success, msg = save_client_record(
             current_user_id,
             acc_id,
             full_name,
@@ -493,10 +621,11 @@ with tab1:
             location,
             occupation,
         )
-        st.success(
-            f"✅ Client **{full_name}** ({acc_id}) successfully registered!"
-        )
-        st.rerun()
+        if success:
+          st.success(f"✅ {msg}")
+          st.rerun()
+        else:
+          st.error(msg)
 
   st.markdown("---")
   st.markdown("#### 📋 Registered Clients Directory")
@@ -505,8 +634,9 @@ with tab1:
     st.info("ℹ️ No clients registered yet.")
   else:
     st.dataframe(df_clients, use_container_width=True)
-
-# --- TAB 2: TRANSACTION RECORDING & 24-HR LOCKOUT ---
+    
+    
+    # --- TAB 2: TRANSACTION RECORDING & 24-HR LOCKOUT ---
 with tab2:
   st.markdown("### Record Transaction & Governance Enforcement")
   df_clients = get_client_records(current_user_id)
@@ -564,6 +694,14 @@ with tab2:
               notes,
           )
 
+          # Generate cryptographic anti-forgery stamp hash
+          stamp_seed = (
+              f"{tx_id}-{selected_acc_id}-{amount}-{tx_time}-rog3rs"
+          )
+          stamp_hash = hashlib.sha256(stamp_seed.encode()).hexdigest()[
+              :16
+          ].upper()
+
           st.session_state.last_receipt = {
               "Transaction ID": tx_id,
               "Automated Date": tx_time,
@@ -574,28 +712,28 @@ with tab2:
               "Transaction Type": tx_type,
               "Amount (GHS)": amount,
               "Notes": notes,
+              "Stamp Hash": stamp_hash,
           }
-          st.success("✅ Transaction recorded and locked for 24-hour compliance!")
+          st.success("✅ Transaction recorded with anti-forgery stamp!")
 
   if st.session_state.last_receipt:
     r = st.session_state.last_receipt
     st.markdown("---")
-    st.markdown("### 🖨️ Organised & Neat Transaction Receipt")
+    st.markdown("### 🖨️ Stamped & Verified Transaction Receipt")
+
     receipt_text = (
-        f"🏛️ *SUSUFLOW ENTERPRISE RECEIPT*\n"
+        f"🏛️ *SUSUFLOW ENTERPRISE SECURE RECEIPT*\n"
         f"----------------------------------------\n"
         f"Tx ID: {r['Transaction ID']}\n"
-        f"Automated Date: {r['Automated Date']}\n"
-        f"ACC ID: {r['ACC ID']}\n"
-        f"Client Name: {r['Client Name']}\n"
-        f"Phone Number: {r['Phone Number']}\n"
-        f"Location: {r['Location']}\n"
+        f"Timestamp: {r['Automated Date']}\n"
+        f"ACC ID: {r['ACC ID']} | Name: {r['Client Name']}\n"
         f"Type: {r['Transaction Type']}\n"
         f"Amount: GHS {r['Amount (GHS)']:,.2f}\n"
         f"Remarks: {r['Notes']}\n"
         f"----------------------------------------\n"
-        f"Status: PERMANENTLY SAVED & SECURED\n"
-        f"Developer: rog3rs (0542470810 / koffieroggers@gmail.com)"
+        f"🛡️ ANTI-FORGERY STAMP HASH: #{r['Stamp Hash']}\n"
+        f"Status: OFFICIAL VERIFIED TRANSACTION\n"
+        f"Developer: rog3rs (0542470810)"
     )
 
     st.markdown(
@@ -611,8 +749,11 @@ with tab2:
             <p><b>Transaction Type:</b> {r['Transaction Type']}</p>
             <p><b>Amount:</b> <span style="font-size: 1.2em; color: #2e7d32;"><b>GHS {r['Amount (GHS)']:,.2f}</b></span></p>
             <p><b>Remarks:</b> {r['Notes']}</p>
-            <hr style="border: 0.5px solid #ddd;">
-            <p style="text-align: center; font-size: 0.8em; color: #777;">Permanently stored in SQLite database partition.</p>
+            <div class="security-stamp">
+                🛡️ VERIFIED & AUTHENTICATED STAMP<br>SECURITY HASH: #{r['Stamp Hash']}
+            </div>
+            <hr style="border: 0.5px solid #ddd; margin-top: 15px;">
+            <p style="text-align: center; font-size: 0.8em; color: #777;">Secured by SusuFlow Enterprise Governance Engine.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -629,10 +770,207 @@ with tab2:
         f'<p style="text-align: center; margin-top: 15px;"><a href="{wa_url}"'
         ' target="_blank" style="display:inline-block; background-color:#25D366;'
         ' color:white; padding:10px 25px; border-radius:6px;'
-        ' text-decoration:none; font-weight:bold;">💬 Share Neat Receipt via'
+        ' text-decoration:none; font-weight:bold;">💬 Share Stamped Receipt via'
         " WhatsApp</a></p>",
         unsafe_allow_html=True,
     )
 
   st.markdown("---")
   st.markdown("#### 🕒 Transaction Governance & Edit Restrictions")
+  df_tx = get_transaction_records(current_user_id)
+  if df_tx.empty:
+    st.info("ℹ️ No transactions recorded yet.")
+  else:
+    st.dataframe(df_tx, use_container_width=True)
+
+    st.markdown(
+        "##### 🔐 Edit / Override Request for Records > 24 Hours Old"
+    )
+    tx_to_edit = st.selectbox(
+        "Select Transaction ID to Review/Edit",
+        options=df_tx["transaction_id"].tolist(),
+    )
+    selected_row = df_tx[df_tx["transaction_id"] == tx_to_edit].iloc[0]
+    entry_time = datetime.strptime(
+        selected_row["timestamp"], "%Y-%m-%d %H:%M:%S"
+    )
+    is_locked = datetime.now() - entry_time > timedelta(hours=24)
+    has_edit_privilege = user_creds["can_edit"] == 1 or user_role == "manager"
+
+    if is_locked and not has_edit_privilege:
+      st.warning(
+          "⚠️ This record is older than 24 hours and your account lacks direct"
+          " edit privileges. Admin override authorization required."
+      )
+      admin_pass = st.text_input(
+          "Admin Authorization Passcode", type="password"
+      )
+      edit_reason = st.text_area(
+          "Mandatory Reason for Editing (Critical Consideration)"
+      )
+
+      if st.button("Request Admin Override & Authorize Edit"):
+        admin_creds = get_user_credentials("admin")
+        entered_admin_hash = hashlib.sha256(admin_pass.encode()).hexdigest()
+        if admin_creds and entered_admin_hash == admin_creds["password_hash"]:
+          if not edit_reason.strip():
+            st.error("❌ A detailed reason for editing is mandatory.")
+          else:
+            log_audit_action(
+                current_user_id,
+                tx_to_edit,
+                "OVERRIDE_EDIT",
+                "admin",
+                edit_reason,
+            )
+            st.success(
+                "✅ Admin override authorized successfully! Audit log updated."
+            )
+        else:
+          st.error("❌ Invalid Admin credentials. Authorization denied.")
+    else:
+      st.info(
+          "ℹ️ You have authorized edit access (within 24-hr window or granted"
+          " special edit privilege)."
+      )
+
+# --- TAB 3: DASHBOARD & PROTECTED EXCEL EXPORT ---
+with tab3:
+  st.markdown("### 📊 Auto-Sum Dashboard & Protected Excel Export")
+  st.caption(
+      "All records computed automatically with cryptographic worksheet"
+      " protection enabled."
+  )
+
+  df_clients = get_client_records(current_user_id)
+  df_tx = get_transaction_records(current_user_id)
+
+  if not df_clients.empty and not df_tx.empty:
+    client_sums = (
+        df_tx.groupby(["acc_id", "client_name"])["amount"].sum().reset_index()
+    )
+    client_sums.rename(
+        columns={"amount": "Total Deposits (GHS)"}, inplace=True
+    )
+    merged_dashboard = pd.merge(
+        df_clients, client_sums, on="acc_id", how="left"
+    ).fillna({"Total Deposits (GHS)": 0.0})
+    merged_dashboard["Total Deposits (GHS)"] = merged_dashboard[
+        "Total Deposits (GHS)"
+    ].apply(lambda x: f"GHS {x:,.2f}")
+    st.dataframe(merged_dashboard, use_container_width=True)
+  else:
+    st.info("ℹ️ Insufficient data for dashboard aggregation.")
+
+  st.markdown("---")
+  st.markdown("#### 📥 Download Protected Excel Report")
+  if st.button("Generate Encrypted Protected Excel File", use_container_width=True):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+      if not df_clients.empty:
+        df_clients.to_excel(writer, sheet_name="Clients", index=False)
+      if not df_tx.empty:
+        df_tx.to_excel(writer, sheet_name="Transactions", index=False)
+
+    output.seek(0)
+    wb = openpyxl.load_workbook(output)
+    for sheet in wb.sheetnames:
+      ws = wb[sheet]
+      ws.protection.sheet = True
+      ws.protection.password = "SusuFlowSecure2026"
+
+    protected_output = io.BytesIO()
+    wb.save(protected_output)
+    protected_output.seek(0)
+
+    st.download_button(
+        label="📥 Download Secure Protected Excel File (.xlsx)",
+        data=protected_output,
+        file_name=f"SusuFlow_Protected_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+# --- TAB 4: ADMIN GOVERNANCE & AUDIT LOGS ---
+with tab4:
+  st.markdown("### 🛡️ Admin Governance & System Controls")
+  if user_role != "manager" and current_user_id != "admin":
+    st.warning(
+        "⚠️ Restricted Area: You are logged in as a standard operator."
+        " Administrative privileges are required to modify quotas, review all"
+        " registered users, or grant edit access."
+    )
+    st.markdown("#### 📋 Your Personal Audit Logs")
+    df_audit = get_audit_logs(current_user_id)
+    if df_audit.empty:
+      st.info("ℹ️ No audit logs recorded yet.")
+    else:
+      st.dataframe(df_audit, use_container_width=True)
+  else:
+    st.success("👑 Master Administrator Access Verified.")
+
+    st.markdown("#### 👥 All Registered Operators & Signups")
+    df_users = get_all_users()
+    st.dataframe(df_users, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("#### ⚙️ Regulate Operator Quotas & Edit Privileges")
+    target_user = st.selectbox(
+        "Select Operator Username", options=df_users["username"].tolist()
+    )
+    t_row = df_users[df_users["username"] == target_user].iloc[0]
+
+    with st.form("gov_form"):
+      new_max = st.number_input(
+          "Maximum Client Registration Limit",
+          min_value=1,
+          max_value=10000,
+          value=int(t_row["max_clients"]),
+      )
+      new_edit_perm = st.selectbox(
+          "Grant Special Edit Privilege",
+          options=[0, 1],
+          format_func=lambda x: "Yes (Can Edit)"
+          if x == 1
+          else "No (Standard 24-hr Lock)",
+          index=int(t_row["can_edit"]),
+      )
+      apply_gov = st.form_submit_button(
+          "Update Operator Privileges", use_container_width=True
+      )
+      if apply_gov:
+        update_user_governance(target_user, new_max, new_edit_perm)
+        st.success(
+            f"✅ Successfully updated governance rules for **{target_user}**!"
+        )
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### 🔍 Global Workspace Inspector (View Any Collector's Records)")
+    inspect_user = st.selectbox(
+        "Select Collector Partition to Inspect",
+        options=df_users["username"].tolist(),
+        key="inspect_select",
+    )
+    col_insp1, col_insp2 = st.columns(2)
+    with col_insp1:
+      st.markdown(f"##### Clients Registered by `{inspect_user}`")
+      st.dataframe(get_client_records(inspect_user), use_container_width=True)
+    with col_insp2:
+      st.markdown(f"##### Transactions by `{inspect_user}`")
+      st.dataframe(
+          get_transaction_records(inspect_user), use_container_width=True
+      )
+
+    st.markdown("---")
+    st.markdown("#### 📋 System-Wide Audit Logs")
+    df_audit_all = get_audit_logs(current_user_id)
+    if df_audit_all.empty:
+      st.info("ℹ️ No audit logs recorded yet.")
+    else:
+      st.dataframe(df_audit_all, use_container_width=True)
+
+st.markdown("---")
+st.caption(
+    "SusuFlow Enterprise • Developer: rog3rs • 📞 0542470810 • 📧"
+    " koffieroggers@gmail.com • Persistent Local Storage Platform"
+)
