@@ -61,6 +61,7 @@ def get_auth_db():
   db_path = os.path.join("secure_data", "users_registry.db")
   conn = sqlite3.connect(db_path, check_same_thread=False)
   cursor = conn.cursor()
+  # Force table creation and verify existence
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -97,6 +98,15 @@ def get_user_credentials(username):
   clean_username = username.strip().lower()
   conn = get_auth_db()
   cursor = conn.cursor()
+  # Double check table exists just in case of stale connection state
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT,
+            identifier TEXT,
+            role TEXT DEFAULT 'collector'
+        )
+    """)
   cursor.execute(
       "SELECT username, password_hash, identifier, role FROM users WHERE"
       " username = ?",
