@@ -488,7 +488,6 @@ with tab1:
   else:
     st.dataframe(df_clients, use_container_width=True)
     
-    
     # --- TAB 2: TRANSACTION RECORDING & 24-HR LOCKOUT ---
 with tab2:
   st.markdown("### Record Transaction & Governance Enforcement")
@@ -751,3 +750,4 @@ st.caption(
     "SusuFlow Enterprise • Developer: rog3rs • 📞 0542470810 • 📧"
     " koffieroggers@gmail.com • Persistent Local Storage Platform"
 )
+
