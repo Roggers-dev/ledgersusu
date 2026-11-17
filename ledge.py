@@ -58,9 +58,8 @@ st.markdown(
 # ==========================================
 def get_auth_db():
   os.makedirs("secure_data", exist_ok=True)
-  conn = sqlite3.connect(
-      os.path.join("secure_data", "users_registry.db"), check_same_thread=False
-  )
+  db_path = os.path.join("secure_data", "users_registry.db")
+  conn = sqlite3.connect(db_path, check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -96,7 +95,7 @@ def register_user(username, password_hash, identifier, role="collector"):
 
 def get_user_credentials(username):
   clean_username = username.strip().lower()
-  conn = get_auth_db()  # Ensures table is created every time
+  conn = get_auth_db()
   cursor = conn.cursor()
   cursor.execute(
       "SELECT username, password_hash, identifier, role FROM users WHERE"
@@ -269,22 +268,24 @@ def get_audit_logs(username):
   return df
 
 
-# Ensure default test collector and Master Admin exist securely
-if not get_user_credentials("collector1"):
-  register_user(
-      "collector1",
-      hashlib.sha256("password123".encode()).hexdigest(),
-      "0542470810",
-      role="collector",
-  )
-
-if not get_user_credentials("admin"):
-  register_user(
-      "admin",
-      hashlib.sha256("admin123".encode()).hexdigest(),
-      "koffieroggers@gmail.com",
-      role="manager",
-  )
+# Safely ensure default test collector and Master Admin exist securely
+try:
+  if not get_user_credentials("collector1"):
+    register_user(
+        "collector1",
+        hashlib.sha256("password123".encode()).hexdigest(),
+        "0542470810",
+        role="collector",
+    )
+  if not get_user_credentials("admin"):
+    register_user(
+        "admin",
+        hashlib.sha256("admin123".encode()).hexdigest(),
+        "koffieroggers@gmail.com",
+        role="manager",
+    )
+except Exception:
+  pass
 
 
 # ==========================================
