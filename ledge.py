@@ -54,7 +54,7 @@ st.markdown(
 # ==========================================
 # 2. PERSISTENT DATABASE INITIALIZATION
 # ==========================================
-def init_auth_db():
+def get_auth_connection():
   os.makedirs("secure_data", exist_ok=True)
   conn = sqlite3.connect(
       os.path.join("secure_data", "users_registry.db"), check_same_thread=False
@@ -71,12 +71,10 @@ def init_auth_db():
   return conn
 
 
-auth_conn = init_auth_db()
-
-
 def register_user(username, password_hash, identifier):
-  cursor = auth_conn.cursor()
-  clean_username = username.strip().lower()  # Enforce lowercase for stability
+  conn = get_auth_connection()
+  cursor = conn.cursor()
+  clean_username = username.strip().lower()
   try:
     cursor.execute(
         """
@@ -85,14 +83,17 @@ def register_user(username, password_hash, identifier):
         """,
         (clean_username, password_hash, identifier.strip().lower()),
     )
-    auth_conn.commit()
+    conn.commit()
+    conn.close()
     return True, "Registration successful!"
   except sqlite3.IntegrityError:
+    conn.close()
     return False, "Username already exists. Choose a different username."
 
 
 def get_user_credentials(username):
-  cursor = auth_conn.cursor()
+  conn = get_auth_connection()
+  cursor = conn.cursor()
   clean_username = username.strip().lower()
   cursor.execute(
       "SELECT username, password_hash, identifier FROM users WHERE username ="
@@ -100,6 +101,7 @@ def get_user_credentials(username):
       (clean_username,),
   )
   row = cursor.fetchone()
+  conn.close()
   if row:
     return {"username": row[0], "password_hash": row[1], "identifier": row[2]}
   return None
@@ -579,3 +581,5 @@ st.caption(
     "SusuFlow Enterprise • Developer: rog3rs • 📞 0542470810 • 📧"
     " koffieroggers@gmail.com • Persistent Local Storage Platform"
 )
+
+
