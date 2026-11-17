@@ -307,12 +307,12 @@ if not st.session_state.auth_user:
         """
         <div class="landing-banner">
             <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ SusuFlow Enterprise</h1>
-            <p style="font-size: 1.1em; color: #d0d7de;">Secure micro-finance platform with 24-hour edit lockout, admin override audit trails, and encrypted exports.</p>
+            <p style="font-size: 1.1em; color: #d0d7de;">Secure micro-finance platform with 24-hour edit lockout, admin override audit trails, and protected exports.</p>
             <hr style="border-color: rgba(255,255,255,0.2);">
             <ul style="list-style-type: none; padding-left: 0; line-height: 2.2em; font-size: 1.05em;">
                 <li>🔒 <b>24-Hour Edit Protection:</b> Records lock automatically after 24 hours.</li>
                 <li>🛡️ <b>Admin Privileges:</b> Critical overrides require admin authorization & reasons.</li>
-                <li>📊 <b>Protected Excel Reports:</b> Data exports with sheet protection.</li>
+                <li>📊 <b>Protected Excel Reports:</b> Data exports with worksheet protection.</li>
             </ul>
         </div>
         """,
@@ -481,8 +481,8 @@ with tab1:
     st.info("ℹ️ No clients registered yet.")
   else:
     st.dataframe(df_clients, use_container_width=True)
-
-# --- TAB 2: TRANSACTION RECORDING & 24-HR LOCKOUT ---
+    
+    # --- TAB 2: TRANSACTION RECORDING & 24-HR LOCKOUT ---
 with tab2:
   st.markdown("### Record Transaction & Governance Enforcement")
   df_clients = get_client_records(current_user_id)
@@ -536,7 +536,7 @@ with tab2:
               c_match["phone_number"],
               tx_type,
               tx_loc,
-5000,
+              amount,
               notes,
           )
 
@@ -553,6 +553,63 @@ with tab2:
           }
           st.success("✅ Transaction recorded and locked for 24-hour compliance!")
 
+  if st.session_state.last_receipt:
+    r = st.session_state.last_receipt
+    st.markdown("---")
+    st.markdown("### 🖨️ Organised & Neat Transaction Receipt")
+    receipt_text = (
+        f"🏛️ *SUSUFLOW ENTERPRISE RECEIPT*\n"
+        f"----------------------------------------\n"
+        f"Tx ID: {r['Transaction ID']}\n"
+        f"Automated Date: {r['Automated Date']}\n"
+        f"ACC ID: {r['ACC ID']}\n"
+        f"Client Name: {r['Client Name']}\n"
+        f"Phone Number: {r['Phone Number']}\n"
+        f"Location: {r['Location']}\n"
+        f"Type: {r['Transaction Type']}\n"
+        f"Amount: GHS {r['Amount (GHS)']:,.2f}\n"
+        f"Remarks: {r['Notes']}\n"
+        f"----------------------------------------\n"
+        f"Status: PERMANENTLY SAVED & SECURED\n"
+        f"Developer: rog3rs (0542470810 / koffieroggers@gmail.com)"
+    )
+
+    st.markdown(
+        f"""
+        <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; border: 2px solid #1e3c72; color: #000; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+            <h3 style="text-align: center; color: #1e3c72; margin-bottom: 0;">🏛️ SUSUFLOW ENTERPRISE</h3>
+            <p style="text-align: center; font-size: 0.9em; color: #555;">Official Verified Transaction Receipt</p>
+            <hr style="border: 0.5px solid #ddd;">
+            <p><b>Transaction ID:</b> {r['Transaction ID']}</p>
+            <p><b>Automated Date & Time:</b> {r['Automated Date']}</p>
+            <p><b>ACC ID:</b> {r['ACC ID']} | <b>Client Name:</b> {r['Client Name']}</p>
+            <p><b>Phone Number:</b> {r['Phone Number']} | <b>Location:</b> {r['Location']}</p>
+            <p><b>Transaction Type:</b> {r['Transaction Type']}</p>
+            <p><b>Amount:</b> <span style="font-size: 1.2em; color: #2e7d32;"><b>GHS {r['Amount (GHS)']:,.2f}</b></span></p>
+            <p><b>Remarks:</b> {r['Notes']}</p>
+            <hr style="border: 0.5px solid #ddd;">
+            <p style="text-align: center; font-size: 0.8em; color: #777;">Permanently stored in SQLite database partition.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    wa_text = urllib.parse.quote(receipt_text)
+    clean_ph = "".join(filter(str.isdigit, str(r["Phone Number"])))
+    wa_url = (
+        f"https://wa.me/{clean_ph}?text={wa_text}"
+        if clean_ph
+        else f"https://wa.me/?text={wa_text}"
+    )
+    st.markdown(
+        f'<p style="text-align: center; margin-top: 15px;"><a href="{wa_url}"'
+        ' target="_blank" style="display:inline-block; background-color:#25D366;'
+        ' color:white; padding:10px 25px; border-radius:6px;'
+        ' text-decoration:none; font-weight:bold;">💬 Share Neat Receipt via'
+        " WhatsApp</a></p>",
+        unsafe_allow_html=True,
+    )
+
   st.markdown("---")
   st.markdown("#### 🕒 Transaction Governance & Edit Restrictions")
   df_tx = get_transaction_records(current_user_id)
@@ -565,10 +622,13 @@ with tab2:
         "##### 🔐 Edit / Override Request for Records > 24 Hours Old"
     )
     tx_to_edit = st.selectbox(
-        "Select Transaction ID to Review/Edit", options=df_tx["transaction_id"].tolist()
+        "Select Transaction ID to Review/Edit",
+        options=df_tx["transaction_id"].tolist(),
     )
     selected_row = df_tx[df_tx["transaction_id"] == tx_to_edit].iloc[0]
-    entry_time = datetime.strptime(selected_row["timestamp"], "%Y-%m-%d %H:%M:%S")
+    entry_time = datetime.strptime(
+        selected_row["timestamp"], "%Y-%m-%d %H:%M:%S"
+    )
     is_locked = datetime.now() - entry_time > timedelta(hours=24)
 
     if is_locked:
@@ -609,11 +669,10 @@ with tab2:
           "ℹ️ This record is within the 24-hour window and can be freely"
           " updated."
       )
-      
-      
-      # --- TAB 3: DASHBOARD & PROTECTED EXCEL EXPORT ---
+
+# --- TAB 3: DASHBOARD & PROTECTED EXCEL EXPORT ---
 with tab3:
-  st.markdown("### 📊 Auto-Sum Dashboard & Encrypted Excel Export")
+  st.markdown("### 📊 Auto-Sum Dashboard & Protected Excel Export")
   st.caption(
       "All records computed automatically with sheet protection enabled for"
       " exports."
@@ -653,7 +712,7 @@ with tab3:
     wb = openpyxl.load_workbook(output)
     for sheet in wb.sheetnames:
       ws = wb[sheet]
-      ws.protection.sheet = True  # Enable worksheet protection so cells cannot be edited by unauthorized users
+      ws.protection.sheet = True
 
     protected_output = io.BytesIO()
     wb.save(protected_output)
@@ -685,5 +744,3 @@ st.caption(
     "SusuFlow Enterprise • Developer: rog3rs • 📞 0542470810 • 📧"
     " koffieroggers@gmail.com • Persistent Local Storage Platform"
 )
-
-
