@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import io
 import os
@@ -63,9 +63,6 @@ def init_auth_db():
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
             password_hash TEXT,
-            full_name TEXT,
-            location TEXT,
-            work TEXT,
             phone_number TEXT,
             email TEXT,
             zone TEXT,
@@ -91,8 +88,6 @@ def init_auth_db():
       "ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0",
       "ALTER TABLE users ADD COLUMN max_clients INTEGER DEFAULT 50",
       "ALTER TABLE users ADD COLUMN recovery_contact TEXT DEFAULT ''",
-      "ALTER TABLE users ADD COLUMN location TEXT DEFAULT ''",
-      "ALTER TABLE users ADD COLUMN work TEXT DEFAULT ''",
       "ALTER TABLE users ADD COLUMN phone_number TEXT DEFAULT ''",
       "ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''",
   ]:
@@ -111,35 +106,28 @@ auth_conn = init_auth_db()
 def register_user(
     username,
     password_hash,
-    full_name,
-    location,
-    work,
     phone_number,
     email,
-    zone,
+    zone="Market Zone 1",
     role="collector",
-    recovery_contact="",
 ):
   cursor = auth_conn.cursor()
   try:
     is_approved = 1 if role == "manager" else 1
     cursor.execute(
         """
-            INSERT INTO users (username, password_hash, full_name, location, work, phone_number, email, zone, role, is_approved, is_frozen, max_clients, recovery_contact)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 50, ?)
+            INSERT INTO users (username, password_hash, phone_number, email, zone, role, is_approved, is_frozen, max_clients, recovery_contact)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 50, ?)
         """,
         (
             username,
             password_hash,
-            full_name,
-            location,
-            work,
             phone_number,
             email,
             zone,
             role,
             is_approved,
-            recovery_contact.strip().lower(),
+            phone_number,
         ),
     )
     auth_conn.commit()
@@ -151,9 +139,9 @@ def register_user(
 def get_user_credentials(username):
   cursor = auth_conn.cursor()
   cursor.execute(
-      "SELECT username, password_hash, full_name, location, work,"
-      " phone_number, email, zone, role, is_approved, is_frozen, max_clients,"
-      " recovery_contact FROM users WHERE username = ?",
+      "SELECT username, password_hash, phone_number, email, zone, role,"
+      " is_approved, is_frozen, max_clients, recovery_contact FROM users WHERE"
+      " username = ?",
       (username,),
   )
   row = cursor.fetchone()
@@ -161,17 +149,14 @@ def get_user_credentials(username):
     return {
         "username": row[0],
         "password_hash": row[1],
-        "full_name": row[2],
-        "location": row[3],
-        "work": row[4],
-        "phone_number": row[5],
-        "email": row[6],
-        "zone": row[7],
-        "role": row[8],
-        "is_approved": row[9],
-        "is_frozen": row[10],
-        "max_clients": row[11] if row[11] is not None else 50,
-        "recovery_contact": row[12] if row[12] else "",
+        "phone_number": row[2],
+        "email": row[3],
+        "zone": row[4],
+        "role": row[5],
+        "is_approved": row[6],
+        "is_frozen": row[7],
+        "max_clients": row[8] if row[8] is not None else 50,
+        "recovery_contact": row[9] if row[9] else "",
     }
   return None
 
@@ -179,26 +164,22 @@ def get_user_credentials(username):
 def get_all_users_dict():
   cursor = auth_conn.cursor()
   cursor.execute(
-      "SELECT username, password_hash, full_name, location, work,"
-      " phone_number, email, zone, role, is_approved, is_frozen, max_clients,"
-      " recovery_contact FROM users"
+      "SELECT username, password_hash, phone_number, email, zone, role,"
+      " is_approved, is_frozen, max_clients, recovery_contact FROM users"
   )
   rows = cursor.fetchall()
   users = {}
   for row in rows:
     users[row[0]] = {
         "password_hash": row[1],
-        "full_name": row[2],
-        "location": row[3],
-        "work": row[4],
-        "phone_number": row[5],
-        "email": row[6],
-        "zone": row[7],
-        "role": row[8],
-        "is_approved": row[9],
-        "is_frozen": row[10],
-        "max_clients": row[11] if row[11] is not None else 50,
-        "recovery_contact": row[12] if row[12] else "",
+        "phone_number": row[2],
+        "email": row[3],
+        "zone": row[4],
+        "role": row[5],
+        "is_approved": row[6],
+        "is_frozen": row[7],
+        "max_clients": row[8] if row[8] is not None else 50,
+        "recovery_contact": row[9] if row[9] else "",
     }
   return users
 
@@ -214,7 +195,7 @@ def update_collector_quota(username, max_clients, is_frozen):
 
 def get_user_db_path(username):
   os.makedirs("secure_data", exist_ok=True)
-  if username == "rog3rs_admin":
+  if username == "rogers":
     return os.path.join("secure_data", "master_agency.db")
   else:
     return os.path.join("secure_data", f"db_{username}.db")
@@ -256,18 +237,14 @@ def init_user_db(db_path):
 
 # Ensure default Master Admin exists on first run
 default_admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
-if not get_user_credentials("rog3rs_admin"):
+if not get_user_credentials("rogers"):
   register_user(
-      "rog3rs_admin",
+      "rogers",
       default_admin_hash,
-      "Koffie Rogers (Master Admin)",
-      "Accra",
-      "System Administrator",
       "0542470810",
-      "admin@susuflow.com",
+      "koffieroggers@gmail.com",
       "All Agency Zones",
       role="manager",
-      recovery_contact="0542470810",
   )
 
 
@@ -291,11 +268,11 @@ if not st.session_state.auth_user:
         """
         <div class="landing-banner">
             <h1 style="color: #ffffff; margin-bottom: 10px;">🏛️ SusuFlow Enterprise</h1>
-            <p style="font-size: 1.1em; color: #d0d7de;">Secure micro-finance management platform with permanent SQLite database storage and admin quota regulation.</p>
+            <p style="font-size: 1.1em; color: #d0d7de;">Secure micro-finance management platform with permanent SQLite database storage and strict 24-hour edit locks.</p>
             <hr style="border-color: rgba(255,255,255,0.2);">
             <ul style="list-style-type: none; padding-left: 0; line-height: 2.2em; font-size: 1.05em;">
-                <li>👤 <b>Detailed Profiles:</b> Full Name, Location, Work, Phone, & Email.</li>
-                <li>⚙️ <b>Admin Quota Control:</b> Regulate client registration caps per collector.</li>
+                <li>🔐 <b>Streamlined Sign Up:</b> Username, Choose Password, Phone Number, & Email.</li>
+                <li>⏳ <b>24-Hour Edit Lock:</b> Transactions and usernames cannot be edited after 1 day.</li>
                 <li>🗂️ <b>Permanent Storage:</b> All data is safely saved on disk and never lost.</li>
                 <li>📥 <b>Neat Receipts:</b> Instant dispatch via WhatsApp.</li>
             </ul>
@@ -331,37 +308,19 @@ if not st.session_state.auth_user:
           st.sidebar.error("❌ Username not found.")
 
     else:
-      st.sidebar.subheader("📝 Register New Account")
-      reg_user = st.sidebar.text_input("Choose Username").strip()
+      st.sidebar.subheader("📝 Sign Up New Account")
+      reg_user = st.sidebar.text_input("Username").strip()
       reg_pass = st.sidebar.text_input("Choose Password", type="password")
-      reg_name = st.sidebar.text_input("1. Full Name").strip()
-      reg_loc = st.sidebar.text_input("2. Location").strip()
-      reg_work = st.sidebar.text_input("3. Work").strip()
-      reg_phone = st.sidebar.text_input("4. Phone Number").strip()
-      reg_email = st.sidebar.text_input("5. Email (Optional)").strip()
-      reg_zone = st.sidebar.text_input(
-          "Assigned Market Zone", value="Market Zone 1"
-      ).strip()
+      reg_phone = st.sidebar.text_input("Phone Number").strip()
+      reg_email = st.sidebar.text_input("Email").strip()
 
       if st.sidebar.button("Register & Access Workspace", use_container_width=True):
-        if not reg_user or not reg_pass or not reg_name or not reg_phone:
-          st.sidebar.error(
-              "❌ Please fill in required fields (Username, Password, Full"
-              " Name, Phone Number)."
-          )
+        if not reg_user or not reg_pass or not reg_phone or not reg_email:
+          st.sidebar.error("❌ Please fill in all required sign up fields.")
         else:
           pass_hash = hashlib.sha256(reg_pass.encode()).hexdigest()
           success, msg = register_user(
-              reg_user,
-              pass_hash,
-              reg_name,
-              reg_loc,
-              reg_work,
-              reg_phone,
-              reg_email,
-              reg_zone,
-              role="collector",
-              recovery_contact=reg_phone,
+              reg_user, pass_hash, reg_phone, reg_email, role="collector"
           )
           if success:
             st.session_state.auth_user = reg_user
@@ -372,7 +331,7 @@ if not st.session_state.auth_user:
     st.sidebar.markdown(
         """
         <div class="dev-badge">
-            👨‍💻 Developer: rog3rs<br>📞 0542470810
+            👨‍💻 Developer: rogers<br>📧 koffieroggers@gmail.com<br>📞 0542470810
         </div>
         """,
         unsafe_allow_html=True,
@@ -387,7 +346,7 @@ current_user_id = st.session_state.auth_user
 fresh_user_data = get_user_credentials(current_user_id)
 
 current_role = fresh_user_data.get("role", "collector")
-current_agent_name = fresh_user_data.get("full_name", "Field Agent")
+current_agent_name = fresh_user_data.get("username", "Field Agent")
 current_zone = fresh_user_data.get("zone", "Market Zone")
 max_allowed_clients = fresh_user_data.get("max_clients", 50)
 
@@ -459,6 +418,17 @@ def save_my_transaction(
   agent_db_conn.commit()
 
 
+def update_my_transaction(tx_id, amount, notes):
+  cursor = agent_db_conn.cursor()
+  cursor.execute(
+      """
+        UPDATE transactions SET amount = ?, notes = ? WHERE transaction_id = ?
+    """,
+      (amount, notes, tx_id),
+  )
+  agent_db_conn.commit()
+
+
 # Sidebar Workspace Info
 st.sidebar.markdown(f"### 👤 Operator: {current_agent_name}")
 st.sidebar.info(
@@ -473,7 +443,7 @@ if st.sidebar.button("Log Out Session", use_container_width=True):
 st.sidebar.markdown(
     """
     <div class="dev-badge">
-        👨‍💻 Developer: rog3rs<br>📞 0542470810
+        👨‍💻 Developer: rogers<br>📧 koffieroggers@gmail.com<br>📞 0542470810
     </div>
     """,
     unsafe_allow_html=True,
@@ -483,13 +453,15 @@ st.sidebar.markdown(
 head_col1, head_col2 = st.columns([3, 1])
 with head_col1:
   st.title("💼 SusuFlow Enterprise Command Centre")
-  st.markdown("*Persistent Local SQLite Storage & Admin Quota Management*")
+  st.markdown(
+      "*Persistent Local SQLite Storage & 24-Hour Transaction Lock Rule*"
+  )
 with head_col2:
   st.markdown(
       "<div style='text-align: right; padding-top: 15px; font-size: 0.9em;"
       " color: #333; background: #fff; padding: 8px 12px; border-radius: 6px;"
-      " border: 1px solid #ddd;'><b>Developer:</b> rog3rs<br><b>Contact:</b>"
-      " 0542470810</div>",
+      " border: 1px solid #ddd;'><b>Developer:</b> rogers<br><b>Email:</b>"
+      " koffieroggers@gmail.com</div>",
       unsafe_allow_html=True,
   )
 st.markdown("---")
@@ -497,7 +469,7 @@ st.markdown("---")
 tab_list = [
     "👥 Client Registration & Directory",
     "📥 Transaction Recording & Receipts",
-    "📊 Persistent Records Auditor",
+    "📊 Persistent Records & 24h Edit Rule",
 ]
 if current_role == "manager":
   tab_list.append("⚙️ Master Admin & Collector Oversight")
@@ -529,12 +501,12 @@ with tab1:
     with st.form("client_reg_form", clear_on_submit=True):
       col1, col2 = st.columns(2)
       with col1:
-        c_name = st.text_input("1. Full Name / Account Name")
-        c_loc = st.text_input("2. Location")
-        c_work = st.text_input("3. Work / Occupation")
+        c_name = st.text_input("Full Name / Account Name")
+        c_loc = st.text_input("Location")
+        c_work = st.text_input("Work / Occupation")
       with col2:
-        c_phone = st.text_input("4. Phone Number")
-        c_email = st.text_input("5. Email (Optional)")
+        c_phone = st.text_input("Phone Number")
+        c_email = st.text_input("Email (Optional)")
         c_zone = st.text_input("Market Zone", value=current_zone)
 
       c_id = st.text_input(
@@ -560,6 +532,7 @@ with tab1:
     st.info("ℹ️ No clients registered yet. Records saved here remain intact.")
   else:
     st.dataframe(df_clients_check, use_container_width=True)
+    
     
     # --- TAB 2: TRANSACTION RECORDING & RECEIPTS ---
 with tab2:
@@ -636,7 +609,10 @@ with tab2:
               "Amount (GHS)": amount,
               "Notes": notes,
           }
-          st.success("✅ Transaction recorded and saved permanently!")
+          st.success(
+              "✅ Transaction recorded and saved permanently! (Locked after 24"
+              " hours)"
+          )
 
   if st.session_state.last_receipt:
     r = st.session_state.last_receipt
@@ -655,6 +631,7 @@ with tab2:
         f"Amount: GHS {r['Amount (GHS)']:,.2f}\n"
         f"Remarks: {r['Notes']}\n"
         f"----------------------------------------\n"
+        f"Developer: rogers (koffieroggers@gmail.com)\n"
         f"Status: PERMANENTLY SAVED & SECURED"
     )
 
@@ -672,7 +649,7 @@ with tab2:
             <p><b>Amount:</b> <span style="font-size: 1.2em; color: #2e7d32;"><b>GHS {r['Amount (GHS)']:,.2f}</b></span></p>
             <p><b>Remarks:</b> {r['Notes']}</p>
             <hr style="border: 0.5px solid #ddd;">
-            <p style="text-align: center; font-size: 0.8em; color: #777;">Permanently stored in SQLite database partition.</p>
+            <p style="text-align: center; font-size: 0.8em; color: #777;">Developer: rogers (koffieroggers@gmail.com)</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -694,18 +671,63 @@ with tab2:
         unsafe_allow_html=True,
     )
 
-# --- TAB 3: PERSISTENT RECORDS AUDITOR ---
+# --- TAB 3: PERSISTENT RECORDS & 24H EDIT RULE ---
 with tab3:
-  st.markdown("### 📊 All Persistent Transaction & Client Records")
-  st.caption(
-      "All records kept on the app remain stored permanently on disk so data is"
-      " never lost."
+  st.markdown("### 📊 Persistent Transactions & 24-Hour Edit Restriction")
+  st.info(
+      "⏱️ **Rule Notice:** Transactions and amounts cannot be edited or modified"
+      " after 1 day (24 hours) from submission."
   )
+
   df_tx = get_my_transactions()
   if df_tx.empty:
     st.info("ℹ️ No transactions recorded yet.")
   else:
+    now = datetime.now()
+
+    # Check edit eligibility for each transaction
+    editable_txs = []
+    locked_txs = []
+
+    for idx, row in df_tx.iterrows():
+      tx_time = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
+      if now - tx_time <= timedelta(hours=24):
+        editable_txs.append(row["transaction_id"])
+      else:
+        locked_txs.append(row["transaction_id"])
+
+    st.markdown("#### 📝 Transaction Ledger")
     st.dataframe(df_tx, use_container_width=True)
+
+    if editable_txs:
+      st.markdown(
+          "---\n#### ✍️ Edit Recent Transactions (Within 24-Hour Window)"
+      )
+      selected_edit_tx = st.selectbox(
+          "Select Transaction ID to Edit", options=editable_txs
+      )
+      if selected_edit_tx:
+        current_row = df_tx.loc[
+            df_tx["transaction_id"] == selected_edit_tx
+        ].iloc[0]
+        with st.form("edit_tx_form"):
+          new_amt = st.number_input(
+              "Edit Amount (GHS)",
+              value=float(current_row["amount"]),
+              format="%.2f",
+          )
+          new_notes = st.text_input("Edit Remarks", value=current_row["notes"])
+          submit_edit = st.form_submit_button(
+              "Save Changes (Allowed within 24 Hours)"
+          )
+          if submit_edit:
+            update_my_transaction(selected_edit_tx, new_amt, new_notes)
+            st.success(f"✅ Transaction {selected_edit_tx} updated successfully!")
+            st.rerun()
+    else:
+      st.markdown(
+          "ℹ️ *No editable transactions found within the 24-hour window.*"
+      )
 
 # --- TAB 4: MASTER ADMIN & COLLECTOR OVERSIGHT (MANAGER ONLY) ---
 if tab_admin:
@@ -713,11 +735,6 @@ if tab_admin:
     st.markdown(
         "### ⚙️ Master Admin Dashboard: Collector Oversight & Quota Regulation"
     )
-    st.caption(
-        "Review all registered collectors, monitor total client registrations,"
-        " and regulate client quotas per collector."
-    )
-
     users_dict = get_all_users_dict()
     collector_items = [
         (uid, data)
@@ -743,8 +760,8 @@ if tab_admin:
 
         roster_data.append({
             "Username": uid,
-            "Full Name": data.get("full_name"),
-            "Phone": data.get("phone_number"),
+            "Phone Number": data.get("phone_number"),
+            "Email": data.get("email"),
             "Zone": data.get("zone"),
             "Clients Registered": client_count,
             "Max Quota Allowed": data.get("max_clients", 50),
@@ -763,7 +780,7 @@ if tab_admin:
       selected_collector = st.selectbox(
           "Select Collector to Regulate",
           options=[item[0] for item in collector_items],
-          format_func=lambda x: f"{x} - {users_dict[x].get('full_name')} ({users_dict[x].get('zone')})",
+          format_func=lambda x: f"{x} ({users_dict[x].get('phone_number')})",
       )
 
       curr_data = users_dict[selected_collector]
@@ -797,6 +814,6 @@ if tab_admin:
 
 st.markdown("---")
 st.caption(
-    "SusuFlow Enterprise • Developed by rog3rs / 0542470810 • Persistent"
-    " Local Storage & Admin Oversight"
+    "SusuFlow Enterprise • Developed by rogers (koffieroggers@gmail.com /"
+    " 0542470810) • Persistent Local Storage Platform"
 )
