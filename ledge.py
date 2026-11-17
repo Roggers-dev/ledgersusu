@@ -482,6 +482,7 @@ with tab1:
   else:
     st.dataframe(df_clients, use_container_width=True)
     
+    
     # --- TAB 2: TRANSACTION RECORDING & 24-HR LOCKOUT ---
 with tab2:
   st.markdown("### Record Transaction & Governance Enforcement")
@@ -536,7 +537,7 @@ with tab2:
               c_match["phone_number"],
               tx_type,
               tx_loc,
-              amount,
+              amount,  # Correctly passing dynamic input amount
               notes,
           )
 
